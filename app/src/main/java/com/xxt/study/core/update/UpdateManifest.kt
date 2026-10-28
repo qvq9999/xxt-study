@@ -25,7 +25,14 @@ data class UpdateManifest(
     /** 低于这个版本必须先升——目前不用，留给"旧版接口作废"的场景 */
     @SerialName("minVersionCode") val minVersionCode: Int = 0,
     @SerialName("packageName") val packageName: String = "",
-    /** APK 签名证书的 sha256，用来挡住被别人重签的包 */
+    /**
+     * APK 签名证书的 sha256。
+     *
+     * **目前只在清单里保留字段，客户端不强制校验**：
+     * 覆盖安装时系统安装器自己就会拒掉签名不一致的包，
+     * 再算一遍只是重复同一道检查，却要多解析一次 APK 的签名块。
+     * 真要防"被换包"，sha256 已经挡住了。
+     */
     @SerialName("signatureSha256") val signatureSha256: String = "",
     /** GitHub Release 的 APK 直链。镜像地址在客户端拼 */
     @SerialName("url") val url: String = "",
