@@ -143,7 +143,9 @@ internal fun CourseRow(
             )
             Text(
                 text = if (digest.ok) {
-                    if (digest.works.isEmpty()) "暂无作业" else "共 ${digest.works.size} 份作业"
+                    val base = if (digest.works.isEmpty()) "暂无作业" else "共 ${digest.works.size} 份作业"
+                    // 结课是用户判断"这门课的红点为什么没了"的依据，必须写出来
+                    if (digest.course.closed) "$base · 已结课" else base
                 } else {
                     digest.error ?: "暂时取不到"
                 },
@@ -154,7 +156,7 @@ internal fun CourseRow(
         }
 
         if (digest.ok) {
-            CountChip(actionable, expired)
+            CountChip(actionable, expired, digest.course.closed)
             Icon(
                 imageVector = Icons24.ChevronRight,
                 contentDescription = null,
@@ -168,26 +170,29 @@ internal fun CourseRow(
 /**
  * 课程行右侧的计数。
  *
- * 三种状态刻意分开，因为它们的含义完全不同：
+ * 四种状态刻意分开，因为它们的含义完全不同：
  * - 有可交作业 → 红，提醒"这里还有活"
  * - 只剩已截止的 → 灰「已截止」，不制造红点（点了也交不上）
+ * - 课程已结课 → 灰「已结课」，和"已截止"区分开：
+ *   前者是整门课结束，后者是单份作业过期
  * - 一份都没有 → 绿「已清」
  */
 @Composable
-private fun CountChip(actionable: Int, expired: Int) {
+private fun CountChip(actionable: Int, expired: Int, closed: Boolean) {
     val bg = when {
         actionable > 0 -> Palette.alarmSoft
-        expired > 0 -> Palette.bg
+        expired > 0 || closed -> Palette.bg
         else -> Palette.okSoft
     }
     val fg = when {
         actionable > 0 -> Palette.alarm
-        expired > 0 -> Palette.weak
+        expired > 0 || closed -> Palette.weak
         else -> Palette.ok
     }
     val text = when {
         actionable > 0 -> "$actionable 份"
         expired > 0 -> "已截止"
+        closed -> "已结课"
         else -> "已清"
     }
     Box(

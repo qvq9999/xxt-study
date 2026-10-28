@@ -19,13 +19,8 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.mutableStateMapOf
-import androidx.compose.runtime.setValue
-import kotlinx.coroutines.delay
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -38,13 +33,12 @@ import androidx.compose.ui.unit.sp
 import com.xxt.study.core.ui.Icons24
 import com.xxt.study.core.ui.Palette
 import com.xxt.study.core.ui.countdownText
-import com.xxt.study.core.ui.isExpired
 import com.xxt.study.core.ui.isUrgent
 import com.xxt.study.core.ui.rememberNow
 import com.xxt.study.domain.CourseDigest
 import com.xxt.study.domain.Work
-import com.xxt.study.domain.WorkStatus
-import com.xxt.study.domain.isActionable
+import com.xxt.study.domain.WorkView
+import com.xxt.study.domain.view
 
 /**
  * 作业列表。
@@ -60,7 +54,10 @@ fun WorkListScreen(
 ) {
     // 每 30 秒走一次：倒计时按分钟/小时显示，秒级刷新只是白耗电
     val now = rememberNow()
-    val sorted = sortWorks(digest.works)
+    val closed = digest.course.closed
+    val sorted = sortWorks(digest.works, now, closed)
+    // 和「待提交」分组用同一个口径（含状态未确认的），否则头部数字和分组条数会对不上
+    val openCount = digest.works.count { it.view(now, closed).countsAsTodo }
 
     Column(
         modifier = Modifier
@@ -96,7 +93,13 @@ fun WorkListScreen(
                     color = Palette.ink,
                 )
                 Text(
-                    text = "${digest.todoCount} 份未交 · 共 ${digest.works.size} 份",
+                    // 结课课程不再报"几份未交"——那个数字没有意义，
+                    // 用户点开只会看到一堆早就关掉的作业
+                    text = if (closed) {
+                        "已结课 · 共 ${digest.works.size} 份"
+                    } else {
+                        "$openCount 份待提交 · 共 ${digest.works.size} 份"
+                    },
                     fontSize = 11.sp,
                     color = Palette.weak,
                     modifier = Modifier.padding(top = 2.dp),
@@ -123,8 +126,24 @@ fun WorkListScreen(
         val expanded = remember { mutableStateMapOf<WorkGroup, Boolean>() }
         fun isExpanded(g: WorkGroup) = expanded[g] ?: (g == WorkGroup.TODO)
         val sections = WorkGroup.entries
-            .map { g -> g to sorted.filter { groupOfWork(it, now) == g } }
+            .map { g -> g to sorted.filter { groupOfWork(it, now, closed) == g } }
             .filter { it.second.isNotEmpty() }
+
+        // 结课提示：说明为什么这里的"未交"全归到了已截止，避免用户以为是程序漏了
+        if (closed && sorted.isNotEmpty()) {
+            Text(
+                text = "这门课已结课，未交作业按「已截止」显示，不再计入待办。",
+                fontSize = 11.sp,
+                color = Palette.weak,
+                lineHeight = 16.sp,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 20.dp, vertical = 6.dp)
+                    .clip(RoundedCornerShape(10.dp))
+                    .background(Palette.card)
+                    .padding(horizontal = 12.dp, vertical = 9.dp),
+            )
+        }
 
         if (sorted.isEmpty()) {
             Box(
@@ -165,7 +184,7 @@ fun WorkListScreen(
                     }
                     if (isExpanded(group)) {
                         items(list, key = { it.detailUrl }) { work ->
-                            WorkRow(work, now) { onOpenWork(work) }
+                            WorkRow(work, now, closed) { onOpenWork(work) }
                         }
                     }
                 }
@@ -175,7 +194,8 @@ fun WorkListScreen(
 }
 
 @Composable
-private fun WorkRow(work: Work, now: Long, onClick: () -> Unit) {
+private fun WorkRow(work: Work, now: Long, closed: Boolean, onClick: () -> Unit) {
+    val view = work.view(now, closed)
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -192,17 +212,22 @@ private fun WorkRow(work: Work, now: Long, onClick: () -> Unit) {
                 fontWeight = FontWeight.Medium,
                 color = Palette.ink,
             )
-            val sub = subtitleOf(work)
+            val sub = subtitleOf(work, view)
             if (sub.isNotBlank()) {
                 Text(
                     text = sub,
                     fontSize = 11.sp,
-                    color = if (isOverdue(work, now)) Palette.alarm else Palette.weak,
+                    // 还能交但快到期 → 告警色；其余一律弱化，不要整屏都在喊
+                    color = if (view == WorkView.OPEN && work.isUrgentNow(now)) {
+                        Palette.alarm
+                    } else {
+                        Palette.weak
+                    },
                     modifier = Modifier.padding(top = 3.dp),
                 )
             }
         }
-        StatusChip(work, now)
+        StatusChip(work, now, closed)
         Icon(
             imageVector = Icons24.ChevronRight,
             contentDescription = null,
@@ -212,38 +237,41 @@ private fun WorkRow(work: Work, now: Long, onClick: () -> Unit) {
     }
 }
 
+/**
+ * 状态徽标。
+ *
+ * 判定全部来自 [WorkView]，这里只负责上色和文案——
+ * 不在这里重新判一遍时间，否则两处口径早晚会分叉
+ * （上一版就是这样：chip 判"已过期"，分组却还按"能交"算）。
+ */
 @Composable
-private fun StatusChip(work: Work, now: Long) {
+private fun StatusChip(work: Work, now: Long, closed: Boolean) {
+    val view = work.view(now, closed)
     val deadline = work.deadline
-    val pending = work.status == WorkStatus.PENDING
-    val expired = pending && deadline != null && isExpired(deadline, now)
-    val urgent = pending && deadline != null && isUrgent(deadline, now)
+    val urgent = view == WorkView.OPEN && deadline != null && isUrgent(deadline, now)
 
-    // 未交且知道截止时间时，chip 直接显示倒计时——这比"未交"两个字有用得多
-    val label = when {
-        expired -> "已过期"
-        pending && deadline != null -> countdownText(deadline, now)
-        else -> when (work.status) {
-            WorkStatus.PENDING -> "未交"
-            WorkStatus.SUBMITTED -> "待批阅"
-            WorkStatus.GRADED -> "已完成"
-            WorkStatus.OVERDUE -> "已过期"
-            WorkStatus.UNKNOWN -> work.rawLabel.ifBlank { "未知" }
-        }
+    // 还能交且知道截止时间时，chip 直接显示倒计时——这比"待提交"三个字有用得多
+    val label = when (view) {
+        WorkView.OPEN -> if (deadline != null) countdownText(deadline, now) else "待提交"
+        WorkView.EXPIRED -> "已截止"
+        WorkView.SUBMITTED -> "待批阅"
+        WorkView.DONE -> "已完成"
+        // 不认识的状态词不塞进 chip（整条 aria-label 会把一行撑爆），原文放副标题
+        WorkView.UNKNOWN -> "待确认"
     }
 
     val bg = when {
-        expired || urgent -> Palette.alarmSoft
-        pending -> Palette.brandSoft
-        work.status == WorkStatus.SUBMITTED -> Palette.brandSoft
-        work.status == WorkStatus.GRADED -> Palette.okSoft
+        urgent -> Palette.alarmSoft
+        view == WorkView.OPEN -> Palette.brandSoft
+        view == WorkView.SUBMITTED -> Palette.brandSoft
+        view == WorkView.DONE -> Palette.okSoft
         else -> Palette.bg
     }
     val fg = when {
-        expired || urgent -> Palette.alarm
-        pending -> Palette.brand
-        work.status == WorkStatus.SUBMITTED -> Palette.brand
-        work.status == WorkStatus.GRADED -> Palette.ok
+        urgent -> Palette.alarm
+        view == WorkView.OPEN -> Palette.brand
+        view == WorkView.SUBMITTED -> Palette.brand
+        view == WorkView.DONE -> Palette.ok
         else -> Palette.weak
     }
 
@@ -258,21 +286,34 @@ private fun StatusChip(work: Work, now: Long) {
     }
 }
 
-/** 未交且过了截止时间 */
-private fun isOverdue(work: Work, now: Long): Boolean =
-    work.status == WorkStatus.PENDING && work.deadline?.let { isExpired(it, now) } == true
+/** 还能交、且 24 小时内到期 */
+private fun Work.isUrgentNow(now: Long): Boolean =
+    deadline?.let { isUrgent(it, now) } == true
 
 /**
- * 副标题：状态 + 绝对截止时间。
+ * 副标题：服务端原话 + 绝对截止时间。
  *
  * 用绝对时间（10-15 23:59）而不是再写一遍"剩余多少"——
  * 剩余量已经在右边 chip 上实时走了，这里给出确切时刻便于对照。
+ *
+ * 状态词没认出来（[WorkView.UNKNOWN]）时，这里会原样摊出服务端文案，
+ * 一眼就能看出该往词表里补什么。
  */
-private fun subtitleOf(work: Work): String {
-    val state = STRIP_REMAIN.replace(work.rawLabel, "").trim().ifBlank { work.status.name }
-    val deadline = work.deadline ?: return state
+private fun subtitleOf(work: Work, view: WorkView): String {
+    val state = STRIP_REMAIN.replace(work.rawLabel, "").trim().trim(';', '；', '·', ',')
+    val head = state.take(28).ifBlank { view.fallbackText() }
+    val deadline = work.deadline ?: return head
     val at = SimpleDateFormat("MM-dd HH:mm", Locale.CHINA).format(Date(deadline))
-    return "$state · 截止 $at"
+    return "$head · 截止 $at"
+}
+
+/** 服务端文案为空时的兜底说法 */
+private fun WorkView.fallbackText(): String = when (this) {
+    WorkView.OPEN -> "待提交"
+    WorkView.EXPIRED -> "已截止"
+    WorkView.SUBMITTED -> "待批阅"
+    WorkView.DONE -> "已完成"
+    WorkView.UNKNOWN -> "状态未识别"
 }
 
 /** 去掉 aria-label 里的「剩余394小时23分钟」，避免和 chip 的倒计时重复 */
@@ -294,26 +335,28 @@ private enum class WorkGroup(val title: String) {
     DONE("已完成"),
 }
 
-private fun groupOfWork(w: Work, now: Long): WorkGroup = when {
-    w.isActionable(now) -> WorkGroup.TODO
-    w.status == WorkStatus.PENDING -> WorkGroup.EXPIRED
-    else -> WorkGroup.DONE
-}
+private fun groupOfWork(w: Work, now: Long, closed: Boolean): WorkGroup =
+    when (w.view(now, closed)) {
+        // 状态未知也放待提交：宁可多提醒一次，也别让它从待办里消失
+        WorkView.OPEN, WorkView.UNKNOWN -> WorkGroup.TODO
+        WorkView.EXPIRED -> WorkGroup.EXPIRED
+        WorkView.SUBMITTED, WorkView.DONE -> WorkGroup.DONE
+    }
 
 /**
- * 未交排最前，同状态内**快截止的在前**——用户最关心的是"马上要过期的那份"。
+ * 还能交的排最前，同组内**快截止的在前**——用户最关心的是"马上要过期的那份"。
  * 没有截止时间的排在同类末尾（Long.MAX_VALUE），不占前面的位置。
  */
-internal fun sortWorks(works: List<Work>): List<Work> {
-    fun rank(s: WorkStatus) = when (s) {
-        WorkStatus.PENDING -> 0
-        WorkStatus.OVERDUE -> 1
-        WorkStatus.SUBMITTED -> 2
-        WorkStatus.GRADED -> 3
-        WorkStatus.UNKNOWN -> 4
+internal fun sortWorks(works: List<Work>, now: Long, closed: Boolean = false): List<Work> {
+    fun rank(v: WorkView) = when (v) {
+        WorkView.OPEN -> 0
+        WorkView.UNKNOWN -> 1
+        WorkView.EXPIRED -> 2
+        WorkView.SUBMITTED -> 3
+        WorkView.DONE -> 4
     }
     return works.sortedWith(
-        compareBy<Work> { rank(it.status) }.thenBy { it.deadline ?: Long.MAX_VALUE },
+        compareBy<Work> { rank(it.view(now, closed)) }.thenBy { it.deadline ?: Long.MAX_VALUE },
     )
 }
 

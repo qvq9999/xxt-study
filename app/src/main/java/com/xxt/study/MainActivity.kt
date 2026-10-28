@@ -31,15 +31,22 @@ import com.xxt.study.feature.login.LoginScreen
 import com.xxt.study.feature.mine.GuideScreen
 import com.xxt.study.feature.settings.SettingsScreen
 import com.xxt.study.feature.study.StudyScreen
+import com.xxt.study.feature.update.UpdateDialog
+import com.xxt.study.feature.update.rememberUpdateController
 import com.xxt.study.feature.verify.VerifyScreen
 import com.xxt.study.feature.work.WorkAnswerScreen
 import com.xxt.study.feature.work.WorkListScreen
+import kotlinx.coroutines.delay
 
 class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         val container = (application as App).container
+
+        // 上次下载的安装包如果没装成（用户在系统安装器里取消了），这里顺手清掉，
+        // 免得它一直占着外部目录。注意只在 onCreate 做：正在等安装的那份不能被删。
+        runCatching { container.installer.cleanup() }
 
         // Android 13 起前台服务的通知也要授权，否则刷课跑着但通知栏看不见
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
@@ -73,6 +80,22 @@ class MainActivity : ComponentActivity() {
                         val r = container.repo.session()
                         if (r is Cx.Ok) session = r.data
                     }
+                }
+
+                /*
+                 * 内置更新。
+                 *
+                 * 自动检查放在**登录之后 5 秒**：冷启动那一会儿正在跑课程列表请求，
+                 * 这时候再去外网拉清单，只是多抢一份带宽；等服务端那波先飞完再说。
+                 *
+                 * 只在登录后检查，是因为没登录的用户连作业都看不到，
+                 * 这时候推一个更新弹窗纯属打扰。
+                 */
+                val update = rememberUpdateController(container)
+                LaunchedEffect(loggedIn) {
+                    if (!loggedIn) return@LaunchedEffect
+                    delay(AUTO_CHECK_DELAY_MS)
+                    update.autoCheck()
                 }
 
                 /**
@@ -163,8 +186,19 @@ class MainActivity : ComponentActivity() {
                             onOpenCourse = { openCourse = it },
                             onOpenSettings = { showSettings = true },
                             onOpenGuide = { showGuide = true },
+                            onCheckUpdate = { update.checkManually() },
+                            checkingUpdate = update.checking,
                         )
                     }
+
+                    // 弹窗是独立窗口，放在 Box 里哪个位置都一样；
+                    // 放在 when 外面是为了在设置页/答题页也能收到"有新版本"
+                    UpdateDialog(
+                        state = update.state,
+                        onUpdate = { update.download() },
+                        onLater = { update.dismiss() },
+                        onOpenPermission = { update.openInstallPermission() },
+                    )
                 }
             }
         }
@@ -172,5 +206,8 @@ class MainActivity : ComponentActivity() {
 
     private companion object {
         const val REQ_NOTIFY = 1001
+
+        /** 自动检查更新的延迟：让课程列表那波请求先飞完 */
+        const val AUTO_CHECK_DELAY_MS = 5_000L
     }
 }

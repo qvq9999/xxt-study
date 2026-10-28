@@ -99,11 +99,28 @@ class ParsersTest {
     }
 
     @Test
-    fun `过期未交仍算未完成`() {
-        // 学习通对过期未交的作业仍标"未交"，数字不能漏
-        assertEquals(WorkStatus.PENDING, Parsers.normalizeStatus("作业5 ; 未交（已过期）"))
-        assertTrue(Parsers.normalizeStatus("作业5 ; 未交").countsAsTodo)
-        assertFalse(Parsers.normalizeStatus("作业5 ; 待批阅").countsAsTodo)
+    fun `已截止字样优先于未交`() {
+        /*
+         * 学习通会把两者写在同一行：「作业5 ; 未交（已过期）」。
+         *
+         * 旧实现先判"未交"，这条彻底交不了的作业就永远算在待办里——
+         * 用户在界面上看到的就是"已截止的作业还挂在待提交"。
+         * 现在先判"已截止"，它落到 OVERDUE，界面按"已截止"展示、不计红点。
+         */
+        assertEquals(WorkStatus.OVERDUE, Parsers.normalizeStatus("作业5 ; 未交（已过期）"))
+        assertEquals(WorkStatus.OVERDUE, Parsers.normalizeStatus("作业5 ; 未交 已截止"))
+        // 交过的就是交过的：哪怕同时写着已截止，也不该退回待办
+        assertEquals(WorkStatus.SUBMITTED, Parsers.normalizeStatus("作业6 ; 已交（已截止）"))
+    }
+
+    @Test
+    fun `剩余0分钟说明已经截止`() {
+        val now = 1_700_000_000_000L
+        // 有"剩余"但归零 → 硬证据
+        assertEquals(0L, Parsers.remainMillis("作业5 ; 未交 剩余0分钟"))
+        // 完全没有"剩余"字样 → 不知道截止时间（返回 null，和上面必须分清）
+        assertNull(Parsers.remainMillis("作业5 ; 未交"))
+        assertNull(Parsers.parseDeadline("作业5 ; 未交 剩余0分钟", now))
     }
 
     // ---------- 课程列表 ----------

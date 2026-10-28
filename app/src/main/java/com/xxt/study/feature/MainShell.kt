@@ -62,6 +62,8 @@ fun MainShell(
     onOpenCourse: (CourseDigest) -> Unit,
     onOpenSettings: () -> Unit,
     onOpenGuide: () -> Unit,
+    onCheckUpdate: () -> Unit,
+    checkingUpdate: Boolean,
 ) {
     // tab 与 session 都由 MainActivity 持有：进设置再返回时不能重新请求，
     // 否则账号信息会先闪回占位再跳成真名（用户看到的"已登录→真实账户名"）
@@ -84,6 +86,8 @@ fun MainShell(
                     onOpenGuide = onOpenGuide,
                     onNeedLogin = onNeedLogin,
                     onLogout = onLogout,
+                    onCheckUpdate = onCheckUpdate,
+                    checkingUpdate = checkingUpdate,
                 )
             }
         }

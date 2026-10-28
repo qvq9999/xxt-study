@@ -77,9 +77,16 @@ class SnapshotCache(context: Context) {
         /** 旧缓存没有这个字段，默认 0 = 过期，等于强制重扫一次，升级后不会用到脏数据 */
         val at: Long = 0L,
         val works: List<WorkDto> = emptyList(),
+        /**
+         * 课程是否已结课。
+         *
+         * 旧缓存没有这个字段 → 默认 false。配合 [App] 里的"版本升级清一次快照"，
+         * 用户升级后第一次打开会全量重扫，所以不会长期停在错误值上。
+         */
+        val closed: Boolean = false,
     ) {
         fun toDomain() = CourseDigest(
-            course = Course(courseId, classId, cpi, name),
+            course = Course(courseId, classId, cpi, name, closed),
             todoCount = todo,
             works = works.map { it.toDomain() },
             error = error,
@@ -96,6 +103,7 @@ class SnapshotCache(context: Context) {
                 error = d.error,
                 at = d.at,
                 works = d.works.map { WorkDto.from(it) },
+                closed = d.course.closed,
             )
         }
     }

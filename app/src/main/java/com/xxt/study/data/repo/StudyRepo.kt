@@ -127,12 +127,21 @@ class StudyRepo(
         val digests = courses.map { course ->
             val key = "${course.courseId}:${course.classId}"
             reusable[key]?.let { old ->
-                todoTotal += old.todoCount
-                return@map old
+                /*
+                 * 复用缓存时**重算**待办数，而不是照抄上次的数字。
+                 *
+                 * 保鲜期 12 分钟，这期间完全可能跨过某个截止时间；
+                 * 照抄旧数字的话，用户会在"已经交不上了"的作业上继续看到红点，
+                 * 直到下次真正重扫。重算不花任何网络，只是几个时间比较。
+                 */
+                val recount = old.works.count { it.isActionable(now, old.course.closed) }
+                todoTotal += recount
+                return@map if (recount == old.todoCount) old else old.copy(todoCount = recount)
             }
             when (val r = fetched[key]) {
                 is Cx.Ok -> {
-                    val todo = r.data.count { it.isActionable(now) }
+                    // 结课课程的"未交"是历史遗留，不计入待办（否则首页永远清不干净）
+                    val todo = r.data.count { it.isActionable(now, course.closed) }
                     todoTotal += todo
                     CourseDigest(course, todo, r.data, null, at = now)
                 }

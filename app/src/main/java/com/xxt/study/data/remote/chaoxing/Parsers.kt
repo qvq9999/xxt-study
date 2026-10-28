@@ -174,6 +174,18 @@ object Parsers {
             val classId = content.str("id") ?: content.str("clazzid", "classId") ?: continue
             val cpi = content.str("cpi") ?: channel.str("cpi").orEmpty()
 
+            /*
+             * 结课判定：content.state 或 course.data[0].coursestate 为 1。
+             *
+             * 这两个字段是 41 门真实样本里唯一能区分"正在上"和"上学期"的线索：
+             * 命中它们的 5 门是羽毛球 / 从爱因斯坦到霍金的宇宙 / 军事理论 /
+             * 思想道德与法治 / 国家安全教育，全是已结课的通识旧课，
+             * 而 23 级高数、Java 高级编程这些在上的课都是 0。
+             *
+             * `isretire` 不能用：41 门里 40 门都是 1，没有区分度。
+             */
+            val contentClosed = content.int("state") == 1
+
             val dataArray = (content["course"] as? JsonObject)?.get("data") as? JsonArray
             for (item in dataArray ?: JsonArray(emptyList())) {
                 val courseObj = item as? JsonObject ?: continue
@@ -184,7 +196,13 @@ object Parsers {
                     ?: ""
                 val key = "$courseId:$classId"
                 if (key !in out) {
-                    out[key] = Course(courseId, classId, cpi, cleanName(name))
+                    out[key] = Course(
+                        courseId = courseId,
+                        classId = classId,
+                        cpi = cpi,
+                        name = cleanName(name),
+                        closed = contentClosed || courseObj.int("coursestate") == 1,
+                    )
                 }
             }
         }
@@ -227,6 +245,12 @@ object Parsers {
             if (s.isNotEmpty() && s != "null") return s
         }
         return null
+    }
+
+    /** 取整数；学习通有的字段给的是字符串 "1"，这里一起吃掉 */
+    private fun JsonObject.int(key: String): Int? {
+        val v = this[key] as? JsonPrimitive ?: return null
+        return v.content.trim().toIntOrNull()
     }
 
     /** 兜底源：courselistdata 的 HTML，从链接里抄四要素 */
@@ -294,15 +318,28 @@ object Parsers {
         if (!data.contains("chaoxing.com")) return null
         val params = queryOf(data)
         val title = label.substringBefore(';').substringBefore('；').trim()
+
+        /*
+         * 「剩余0分钟」要单独对待。
+         *
+         * 学习通在作业刚过期时，aria-label 还写着"未交"，只是剩余时间归零。
+         * 旧实现把 0 当成"算不出截止时间"，于是 deadline=null、
+         * 状态还是 PENDING → 一直算"能交"，红点永远消不掉。
+         */
+        val remain = remainMillis(label)
+        val status = normalizeStatus(label).let {
+            if (it == WorkStatus.PENDING && remain != null && remain <= 0) WorkStatus.OVERDUE else it
+        }
+
         return Work(
             workId = params["workid"].orEmpty(),
             answerId = params["answerid"].orEmpty(),
             enc = params["enc"].orEmpty(),
             title = title.ifBlank { data.substringAfterLast('/').take(24) },
             rawLabel = label.trim(),
-            status = normalizeStatus(label),
+            status = status,
             detailUrl = data,
-            deadline = parseDeadline(label, now),
+            deadline = remain?.takeIf { it > 0 }?.let { now + it },
         )
     }
 
@@ -312,20 +349,31 @@ object Parsers {
     )
 
     /**
-     * 把「剩余394小时23分钟」换算成绝对截止时间。
+     * 剩余时长（毫秒）。
      *
-     * 注意这是**服务端渲染那一刻**的剩余量，我们扫描时已经过去几秒到几十秒，
-     * 误差在这个量级可以接受；换成"存剩余分钟数"反而会随缓存时间漂移得更厉害。
+     * 返回 null = label 里**没有**"剩余"字样（可能压根没有截止时间，
+     * 也可能是"已截止"这种不写剩余的文案）；
+     * 返回 0 或负数 = 有"剩余"但已经归零 —— 这是"其实已经截止"的硬证据。
+     *
+     * 这两种情况必须分开：混在一起时，一个已经交不上的作业会被当成"时间未知 → 保守提醒"。
      */
-    fun parseDeadline(label: String, now: Long): Long? {
+    fun remainMillis(label: String): Long? {
         if (label.isBlank()) return null
         val m = REMAIN.find(label) ?: return null
         val days = m.groupValues[1].toLongOrNull() ?: 0L
         val hours = m.groupValues[2].toLongOrNull() ?: 0L
         val minutes = m.groupValues[3].toLongOrNull() ?: 0L
-        val millis = ((days * 24 + hours) * 60 + minutes) * 60_000L
-        return if (millis > 0) now + millis else null
+        return ((days * 24 + hours) * 60 + minutes) * 60_000L
     }
+
+    /**
+     * 把「剩余394小时23分钟」换算成绝对截止时间。
+     *
+     * 注意这是**服务端渲染那一刻**的剩余量，我们扫描时已经过去几秒到几十秒，
+     * 误差在这个量级可以接受；换成"存剩余分钟数"反而会随缓存时间漂移得更厉害。
+     */
+    fun parseDeadline(label: String, now: Long): Long? =
+        remainMillis(label)?.takeIf { it > 0 }?.let { now + it }
 
     private fun queryOf(url: String): Map<String, String> {
         val q = url.substringAfter('?', "")
@@ -337,20 +385,48 @@ object Parsers {
     }
 
     /**
-     * 状态归一。顺序有意为之：先判未交，再判已交，最后判已批阅。
-     * 学习通对过期未交的作业仍显示"未交"，所以 PENDING 优先命中，
-     * 这样首页数字不会把"过期没交"漏掉。
+     * 状态归一。
+     *
+     * **顺序是有意的，改顺序会出 bug**：
+     *
+     * 1. 已批阅 / 已完成 —— 最强的结论，一个作业不可能既批完又没批；
+     * 2. 已交 / 待批阅 —— 只要交过就是交过，哪怕同时写着"已截止"，
+     *    它也不该回到待办列表里；
+     * 3. 已截止 / 已过期 —— 学习通会把两者写在同一行
+     *    （「作业5 ; 未交（已过期）」）。旧实现先判"未交"，
+     *    于是这条彻底交不了的作业永远算在待办里 —— 这就是
+     *    "已截止仍显示未提交"的根因；
+     * 4. 未交 —— 最后兜底。
+     *
+     * 注意"未完成"不会命中"已完成"（前者不含连续三字"已完成"），
+     * "未交"也不会命中"已交"，所以词表之间不会互相吃掉。
      */
     fun normalizeStatus(label: String): WorkStatus {
         if (label.isBlank()) return WorkStatus.UNKNOWN
         return when {
-            label.contains("未交") || label.contains("未提交") || label.contains("未开始") -> WorkStatus.PENDING
-            label.contains("已过期") || label.contains("已截止") -> WorkStatus.OVERDUE
-            label.contains("待批阅") || label.contains("已提交") || label.contains("已交") || label.contains("待评") -> WorkStatus.SUBMITTED
-            label.contains("已完成") || label.contains("已批阅") || label.contains("已评分") -> WorkStatus.GRADED
+            GRADED_WORDS.any { label.contains(it) } -> WorkStatus.GRADED
+            SUBMITTED_WORDS.any { label.contains(it) } -> WorkStatus.SUBMITTED
+            OVERDUE_WORDS.any { label.contains(it) } -> WorkStatus.OVERDUE
+            PENDING_WORDS.any { label.contains(it) } -> WorkStatus.PENDING
             else -> WorkStatus.UNKNOWN
         }
     }
+
+    private val OVERDUE_WORDS = listOf(
+        "已过期", "已截止", "已结束", "已关闭", "已失效", "截止时间已过",
+    )
+
+    private val GRADED_WORDS = listOf(
+        "已完成", "已批阅", "已评分", "已评阅", "已通过", "已打分", "已阅",
+    )
+
+    private val SUBMITTED_WORDS = listOf(
+        "待批阅", "已提交", "已交", "待评", "批阅中", "已上交",
+    )
+
+    private val PENDING_WORDS = listOf(
+        "未交", "未提交", "未开始", "待提交", "未完成", "进行中", "去作答", "去完成",
+    )
 
     /** 判断这份响应是"结构变了"还是"确实没作业" */
     fun looksLikeChangedStructure(html: String): Boolean =

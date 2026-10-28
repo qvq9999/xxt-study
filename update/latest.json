@@ -1,0 +1,13 @@
+{
+  "versionCode": 16,
+  "versionName": "0.6.0",
+  "sizeBytes": 2503004,
+  "sha256": "ea49bb85bb68d83aa146be370d590be7b3a3947f52dfac72ef0623b57e6d3a63",
+  "notes": [
+    "作业状态修正",
+    "内置更新",
+    "升级清一次缓存"
+  ],
+  "packageName": "com.xxt.study",
+  "url": "https://github.com/qvq9999/xxt-study/releases/download/v0.6.0/app-release.apk"
+}

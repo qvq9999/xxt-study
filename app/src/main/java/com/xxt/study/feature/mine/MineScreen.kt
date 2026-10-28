@@ -46,6 +46,8 @@ fun MineScreen(
     onOpenGuide: () -> Unit,
     onNeedLogin: () -> Unit,
     onLogout: () -> Unit,
+    onCheckUpdate: () -> Unit,
+    checkingUpdate: Boolean,
 ) {
     val context = LocalContext.current
     val version = rememberVersion(context)
@@ -127,6 +129,24 @@ fun MineScreen(
                 title = "使用说明",
                 subtitle = "功能教程、AI Key 获取地址（可一键复制）",
                 onClick = onOpenGuide,
+            )
+        }
+
+        Spacer(Modifier.height(14.dp))
+
+        // ---- 关于 ----
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 20.dp)
+                .clip(RoundedCornerShape(14.dp))
+                .background(Palette.card),
+        ) {
+            MineRow(
+                icon = Icons24.Refresh,
+                title = if (checkingUpdate) "正在检查更新" else "检查更新",
+                subtitle = "当前 v$version · 默认走国内镜像源",
+                onClick = { if (!checkingUpdate) onCheckUpdate() },
             )
         }
 

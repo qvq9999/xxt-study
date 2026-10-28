@@ -46,8 +46,9 @@ import com.xxt.study.core.ui.Palette
 import com.xxt.study.core.ui.agoText
 import com.xxt.study.core.ui.rememberNow
 import com.xxt.study.domain.isActionable
+import com.xxt.study.domain.view
 import com.xxt.study.domain.CourseDigest
-import com.xxt.study.domain.WorkStatus
+import com.xxt.study.domain.WorkView
 
 @Composable
 fun HomeScreen(
@@ -80,9 +81,10 @@ fun HomeScreen(
         )
 
         val snapshot = state.snapshot
-        val actionableOf = { d: CourseDigest -> d.works.count { it.isActionable(now) } }
+        // 判定口径统一走 Work.view()：结课课程的"未交"不算待办
+        val actionableOf = { d: CourseDigest -> d.works.count { it.isActionable(now, d.course.closed) } }
         val expiredOf = { d: CourseDigest ->
-            d.works.count { w -> w.status == WorkStatus.PENDING && !w.isActionable(now) }
+            d.works.count { it.view(now, d.course.closed) == WorkView.EXPIRED }
         }
         TodoBlock(
             todo = snapshot?.courses?.sumOf { actionableOf(it) } ?: 0,

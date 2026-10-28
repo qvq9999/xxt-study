@@ -28,8 +28,10 @@
 | 刷课日志 | 完成 | **按课程隔离**（`StudyLogs`），切课程不会串上一门的记录；日志直接铺在正文，不再单开窗口 |
 | 模型快捷切换 | 完成 | 答题页底部 / 刷课页右上角一键切已保存的服务；设置页另有一份「已保存的服务」列表 |
 | 风控验证码 | 完成 | 扫描/刷课/读页面撞上验证码 → 弹出**学习通原版页面**人工完成 → Cookie 导回 → 自动续跑 |
+| 作业状态判定 | 完成 | `服务端状态 × 截止时间 × 课程是否结课 × 当前时间` → 已完成/待批阅/待提交/已截止；结课或过期一律不计红点 |
+| 内置更新 | 完成 | **国内镜像优先**取 `latest.json` → versionCode 比较 → 弹窗 → 下载（换源 + 流式 sha256）→ 系统安装器；24h 节流 |
 | 前台服务保活 | 完成 | `dataSync` 前台服务 + WakeLock 6 小时上限 |
-| 真机联调 | 未做 | 当前 `adb devices` 为空，只做到编译 + **85 个单测全过** |
+| 真机联调 | 未做 | 当前 `adb devices` 为空，只做到编译 + **171 个单测全过** |
 
 ---
 
@@ -90,6 +92,10 @@ app/src/main/java/com/xxt/study/
     study/StudyController.kt    刷课总控：协程 + StateFlow + WakeLock
     study/StudyService.kt       前台服务，只保活不跑业务
     study/StudySettings.kt      倍速、自动答测验等偏好
+    update/UpdateSource.kt      更新源：国内镜像优先，GitHub 兜底（只改 REPO 一处）
+    update/UpdateManifest.kt    latest.json 解析 + 日志简写（纯函数，可单测）
+    update/UpdateChecker.kt     24h 节流 + 换源检查；独立 OkHttpClient，不带学习通 Cookie
+    update/UpdateInstaller.kt   换源下载 + 流式 sha256 + FileProvider 安装
     result/Cx.kt                统一结果类型，UI 层见不到 HTTP 概念
     ui/Theme.kt Icons24.kt      色板、主题、代码内自绘图标
   domain/                       Model / Question / Study（章节、任务点、进度）
@@ -239,6 +245,139 @@ channelList[].content
 
 ---
 
+## 作业状态怎么判定（"已结课还显示未完成"的根因）
+
+状态不是"读一个字段"这么简单。真实数据里三方信息互相打架：
+
+| 现象 | 真实原因 |
+|---|---|
+| 已结课仍显示未完成作业 | 结课课程的作业在服务端仍是"未交"，我们照单全收 |
+| 已截止仍显示未提交 | `aria-label` 会写成「未交（已过期）」，旧代码先判"未交"，永远轮不到"已过期" |
+| 状态展示不对 | 「剩余0分钟」被当成"算不出截止时间"→ `deadline=null` → 保守判"能交" |
+
+所以判定拆成两层，**只有一处口径**（`domain/Model.kt`）：
+
+```
+WorkStatus（服务端说了什么）           WorkView（界面该显示什么）
+  PENDING  未交                          DONE      已完成
+  SUBMITTED 已交/待批阅        +  时间  SUBMITTED 待批阅
+  GRADED    已批阅            +  结课  OPEN      可提交
+  OVERDUE   已截止            +  现在  EXPIRED   已截止
+  UNKNOWN   没认出来                     UNKNOWN   待确认
+```
+
+规则（`Work.view(now, courseClosed)`）：
+
+1. 服务端明说已截止 → `EXPIRED`
+2. 知道截止时间 → 以时间为准（缓存 12 分钟后再看也不会算错）
+3. 不知道截止时间 + 课程已结课 → `EXPIRED`（结课后补交通道已经关了）
+4. 不知道截止时间 + 课程在上 → `OPEN`（**宁可多提醒**，用户明确选了这个）
+5. 状态词没认出来 → `UNKNOWN`，**同样计入待办**，但界面写"待确认"
+
+红点只认 `countsAsTodo = OPEN || UNKNOWN`。已截止、已完成、结课课程的遗留"未交"一律不打扰。
+
+### 结课怎么认
+
+课程列表 JSON 里两个字段：`content.state == 1` 或 `course.data[0].coursestate == 1`。
+
+41 门真实样本里只有 5 门命中，全是旧学期课（羽毛球、军事理论、思想道德与法治、国家安全教育、从爱因斯坦到霍金的宇宙），
+而在上的课（23 级高数、Java 高级编程…）都是 0 —— 语义方向可信。
+
+`isretire` **不能用**：41 门里 40 门都是 1，没有区分度。
+
+### 三个连带修正
+
+- **状态词表顺序**：已批阅 → 已交 → 已截止 → 未交。前两个是"已经发生的事实"，不该被"已截止"覆盖；"已截止"必须排在"未交"前面。
+- **`remainMillis` 与 `parseDeadline` 分开**：前者返回 `null` 表示"没有剩余字样"，返回 `0` 表示"有剩余但归零（已截止）"。混成一个函数就分不清"没截止时间"和"已经截止"。
+- **复用缓存时重算待办数**：12 分钟保鲜期内可能跨过截止时间，照抄旧数字会让红点在"已经交不上"的作业上多挂一会儿。
+
+升级到 0.6.0 会**清一次快照缓存**（`App.purgeSnapshotOnUpgrade`）：旧缓存存的是旧口径算出的 `status`/`todoCount`，
+留着它第一次打开还是错的。代价是首次打开要全量重扫一遍，换取状态立刻正确。
+
+---
+
+## 内置更新
+
+```
+启动 5 秒后（登录后） → latest.json（镜像优先） → versionCode 比较
+      → 弹窗【更新】【稍后】 → 下载（换源 + 流式 sha256） → FileProvider → 系统安装器
+```
+
+### 更新源顺序
+
+用户要求默认走国内镜像，所以**直连 GitHub 只作最後兜底**（`core/update/UpdateSource.kt`）：
+
+```
+https://ghproxy.net/<原始 GitHub 地址>      ← 2026-10-28 实测 200
+https://gh-proxy.com/<原始 GitHub 地址>     ← 2026-10-28 实测 200
+https://ghfast.top/<原始 GitHub 地址>       ← 2026-10-28 实测 000（连不上，留作复活备用）
+<原始 GitHub 地址>                          ← 全挂了才走这条
+```
+
+顺序是**逐个 curl 过**才定的，不是抄来的推荐列表：`ghfast.top` 本来排第一，实测 000，
+排第一的话每次检查都要先等 8 秒超时，用户会感觉"检查更新很慢"，所以挪到最后。
+
+清单和 APK 都用同一套前缀拼接。一个源连不上/返回 HTML 错误页/校验不过，就换下一个——
+镜像缓存旧包是常见情况，`sha256` 不一致时换源重下通常就好了。
+
+### 清单字段（`update/latest.json`）
+
+```json
+{
+  "versionCode": 16,
+  "versionName": "0.6.0",
+  "sizeBytes": 2590000,
+  "sha256": "<apk 的 sha256>",
+  "notes": ["作业状态修正", "内置更新", "升级清一次缓存"],
+  "packageName": "com.xxt.study",
+  "url": "https://github.com/<owner>/<repo>/releases/download/v0.6.0/app-release.apk"
+}
+```
+
+- 只比 `versionCode`，不比 `versionName` 字符串（`0.9.0` vs `0.10.0` 比字符串会错）
+- `packageName` 不符 → 整份清单作废（装错包比不更新严重得多）
+- `sizeBytes` / `sha256` 有一处不符 → 不装，换源重下
+
+### 更新日志一律简写
+
+这是硬约束，两端都收口：
+
+- **软件内弹窗**：`UpdateManifest.shortNotes()` 最多 **3 条**、每条 **36 字**，超出截断加省略号
+- **GitHub 发布页**：`tools/release-update.mjs` 拒绝超过 **20 字**的条目，并把同一份文案写进 Release notes
+
+两处用同一份数据，说法不会分叉。
+
+### 节流与例外
+
+| 规则 | 值 | 为什么 |
+|---|---|---|
+| 自动检查间隔 | 24 小时 | 更新不是秒级的事，一天一次足够 |
+| 启动延迟 | 5 秒 | 让冷启动那波课程列表请求先飞完，别抢带宽 |
+| 风控冷却期 | 不检查 | 风控按请求特征累积，这时候再冒新域名只会更糟 |
+| 点过"稍后"的版本 | 不再自动弹 | 手动检查仍然会告诉他，否则用户以为按钮坏了 |
+| 手动检查 | 不受以上限制 | 除了风控冷却 |
+
+### 为什么不用 DownloadManager
+
+1. **没法换源**：镜像挂了只能整次失败；
+2. **没法流式校验**：只告诉你"下完了"，想比 sha256 还得把文件再读一遍；
+3. 部分 ROM 上它的通知会被拦，进度反而看不见。
+
+自己下就三件事：按顺序换源、边下边算 sha256、下完丢给 FileProvider。包只有 2 MB 出头，进度条在弹窗里显示就够了。
+
+### 发版
+
+```bash
+"/e/gradle98/bin/gradle.bat" :app:assembleRelease
+node tools/release-update.mjs "作业状态修正" "内置更新" "升级清一次缓存"
+git add update/latest.json && git commit -m "release: v0.6.0" && git push
+```
+
+脚本从 `app/build.gradle.kts` 读版本号（唯一来源，不手抄）、算 size/sha256、写 `update/latest.json`，
+有 `gh` CLI 就顺手建 Release 并传包。**不自动 commit**——发版是要人确认的事。
+
+---
+
 ## 获取作业的关键（这是以前项目卡死的地方）
 
 学习通没有公开接口。实测（2026-10-27，真实账号 41 门课）三条硬结论：
@@ -270,16 +409,28 @@ GET mooc1.chaoxing.com/mooc2/work/list
 "/e/gradle98/bin/gradle.bat" :app:testDebugUnitTest
 ```
 
-71 个单测，覆盖六组：
+171 个单测，覆盖十八个测试类：
 
 | 测试类 | 数量 | 覆盖 |
 |---|---|---|
-| `ParsersTest` | 19 | 隐藏 input 属性顺序、作业行过滤、状态归一优先级、课程双源、无年份日期 |
+| `ParsersTest` | 20 | 隐藏 input 属性顺序、作业行过滤、状态归一优先级、`剩余0分钟`、课程双源 |
+| `WorkStateTest` | 11 | **状态机**：截止时间 × 结课 × 当前时间的 11 种组合，以及课程结课字段解析 |
 | `QuestionParserTest` | 13 | 作业页切题（真实 12 题 DOM） |
-| `StudyParsersTest` | 10 | 章节目录、mArg 嵌套抠取、任务点分流与去重 |
-| `VideoSignTest` | 6 | 签名与独立 Python 实现一致、URL 参数齐全、倍速系数 |
 | `QuizParserTest` | 18 | 测验页切题、选项字母分离、AI 答案映射（含判断题正反） |
+| `FillScriptTest` | 11 | 回填 JS 生成：单选/多选/填空/简答，先点后填 |
+| `StudyParsersTest` | 10 | 章节目录、mArg 嵌套抠取、任务点分流与去重 |
+| `ScanProbesTest` | 10 | 探针：旧文档标记、`about:blank` 一律 WAIT、不许按 URL 猜页面 |
+| `VerifyDetectionTest` | 10 | 风控页识别：JSON 不算页面、泛词必须带"请"、登录页不误判 |
+| `DeadlineTest` | 9 | 剩余时间换算、跨过截止后红点自己消失 |
+| `LengthRuleTest` | 9 | 从题干里解析字数要求 |
+| `StudyLogsTest` | 8 | 刷课日志按课程隔离 |
+| `UpdateManifestTest` | 12 | **内置更新**：清单解析、坏清单作废、日志简写、镜像优先级 |
+| `AiPromptTest` | 7 | 提示词拼装与字数约束 |
+| `CourseSearchTest` | 7 | 模糊搜索：连续子串 + 子序列 + 多关键词 |
+| `VideoSignTest` | 6 | 签名与独立 Python 实现一致、URL 参数齐全、倍速系数 |
 | `TrueTypeFontTest` | 5 | 字形 hash 与 fontTools 一致、损坏数据不崩 |
+| `CookieDomainTest` | 4 | Cookie 域不能带前导点（否则登录永远失败） |
+| `CourseListRealDataTest` | 1 | 41 门真实课程 JSON 全量回归 |
 
 真机链路探针（需自己填 Cookie）：
 

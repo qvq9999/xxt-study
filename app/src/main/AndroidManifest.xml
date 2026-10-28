@@ -10,6 +10,13 @@
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
 
+    <!--
+      内置更新：下载完的 APK 要交给系统安装器。
+      Android 8 起光有这个权限还不够，用户必须手动允许"安装未知应用"，
+      所以还要用 Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES 引导一次。
+    -->
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
+
     <application
         android:name=".App"
         android:allowBackup="false"
@@ -35,6 +42,22 @@
             android:name=".core.study.StudyService"
             android:exported="false"
             android:foregroundServiceType="dataSync" />
+
+        <!--
+          把下载好的安装包以 content:// 交给系统安装器。
+          exported=false + 只授权读，是 FileProvider 的最小暴露面；
+          authorities 必须写 ${applicationId}：debug 版会带 .debug 后缀，
+          写死包名会导致 debug 包上"点更新"直接崩。
+        -->
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.fileprovider"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/file_paths" />
+        </provider>
     </application>
 
 </manifest>

@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  FileProvider 暴露给系统安装器的目录。
+  只开 update 一个子目录：安装包被别的 App 拿到也没有意义，
+  但路径开得越宽，被当成"任意文件读取"入口的风险越大。
+
+  注意目录要跟 UpdateInstaller 里的保持一致（getExternalFilesDir(null)/update）。
+-->
+<paths>
+    <external-files-path name="update" path="update/" />
+</paths>
