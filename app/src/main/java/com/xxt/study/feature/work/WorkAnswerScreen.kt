@@ -50,7 +50,6 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import com.xxt.study.core.ai.AiClient
-import com.xxt.study.core.ai.AiPrompt
 import com.xxt.study.core.ai.AnswerSanitizer
 import com.xxt.study.core.ai.LengthRule
 import com.xxt.study.core.ai.LengthRules
@@ -343,16 +342,19 @@ fun WorkAnswerScreen(
     var elapsedSec by remember { mutableStateOf(0L) }
 
     /*
-     * 提示词编辑：草稿（promptDraft）与"已保存的那份"（savedPrompt）分开记。
+     * 对话式优化（0.9.1 取代了原来的"改提示词"）。
      *
-     * 为什么不每次去问 ai.effectivePrompt()：它要读 AndroidKeyStore，
-     * 每敲一个字都读一次会明显卡顿。savedPrompt 只在初始化和"应用/恢复默认"时更新。
+     * - chat        对话记录：用户提的要求、AI 的回应、系统注记，按顺序排
+     * - chatInput   输入框当前内容
+     * - chatHint    空输入点发送时的提示（放在这里而不是 Toast：弹窗里 Toast 常被挡）
+     * - undoStack   每轮优化前压一份旧答案，供【撤销本次优化】回退
+     * - questionsCache 最近一次解析出的题目，优化时直接复用，不重新读页面
      */
-    var promptOpen by remember { mutableStateOf(false) }
-    var savedPrompt by remember { mutableStateOf(ai.effectivePrompt()) }
-    var promptDraft by remember { mutableStateOf(savedPrompt) }
-    var promptCustom by remember { mutableStateOf(ai.usingCustomPrompt()) }
-    val promptDirty = promptDraft.trim() != savedPrompt.trim()
+    var chat by remember { mutableStateOf<List<ChatTurn>>(emptyList()) }
+    var chatInput by remember { mutableStateOf("") }
+    var chatHint by remember { mutableStateOf<String?>(null) }
+    var undoStack by remember { mutableStateOf<List<Map<String, List<String>>>>(emptyList()) }
+    var questionsCache by remember { mutableStateOf<List<Question>>(emptyList()) }
 
     /*
      * 两段式交互：
@@ -453,13 +455,116 @@ fun WorkAnswerScreen(
     }
 
     /**
+     * 把一版答案回填到页面，并刷新"答案区 + 状态"。
+     *
+     * 首次作答和多轮优化走的是同一段逻辑——优化完也只是"换一版答案再回填一次"，
+     * 必须共用；否则两条路的行状态、字数提示迟早会不一致。
+     *
+     * 这里不处理异常：调用方用 try/finally 兜住 generating。
+     */
+    suspend fun fillAndReport(
+        web: WebView,
+        questions: List<Question>,
+        effective: Map<String, List<String>>,
+        /** true = 这一版是多轮优化出来的，文案要说"优化"而不是"作答" */
+        optimized: Boolean = false,
+    ): Int {
+        // 先把 AI 给的答案列出来（此时还不知道能不能填进去）
+        val planned = questions.mapIndexed { index, q ->
+            val given = effective[q.qid]
+            val solved = if (given == null) null else AnswerMapper.toAnswer(q, given)
+            /*
+             * 最后一道闸。
+             *
+             * 上游（AiClient）已经洗过一遍，这里再洗一遍是刻意的**双保险**：
+             * 一旦哪条路径漏了清洗，代价是把提示词写进作答框、学生直接提交——
+             * 比"这题没答案"的代价大得多。清洗不过就当作没答案，交给人工补。
+             */
+            val guarded = solveTextGuard(q, solved)
+            Triple(index + 1, q, guarded)
+        }
+
+        val items = ArrayList<FillItem>()
+        planned.forEach { (_, q, solved) ->
+            val v = solved?.value ?: return@forEach
+            items += FillItem(q.qid, q.type, splitValues(q.type, v))
+        }
+
+        if (items.isEmpty()) {
+            steps = steps.stepDone(2).stepFail(3, "没有可用答案")
+            stage = Stage.Idle
+            phase = "AI 没给出可用答案"
+            message = "AI 没给出可用答案，检查模型是否可用"
+            rows = planned.map { (no, q, solved) ->
+                AnswerRow(no, q.typeLabel.ifBlank { typeName(q.type) }, q.stem.take(80),
+                    solved?.note ?: "无答案", false)
+            }
+            return -1
+        }
+
+        steps = steps.stepDone(2).stepNow(3)
+        stage = Stage.Filling
+        phase = "回填 ${items.size} 题"
+        message = "正在回填 ${items.size} 题"
+        val receipt = evalJs(web, FillScript.build(items)).orEmpty()
+        var missed = parseMissed(receipt)
+
+        // 富文本编辑器是**异步初始化**的：页面刚打开时实例还没建好，
+        // 第一次写入可能落空。没填上的题等 400ms 再补一次，通常就成功了。
+        if (missed.isNotEmpty()) {
+            kotlinx.coroutines.delay(400)
+            val retry = items.filter { it.qid in missed }
+            if (retry.isNotEmpty()) {
+                val again = evalJs(web, FillScript.build(retry)).orEmpty()
+                val stillMissed = parseMissed(again)
+                missed = missed - (retry.map { it.qid }.toSet() - stillMissed)
+            }
+        }
+
+        rows = planned.map { (no, q, solved) ->
+            val value = solved?.value
+            // 以页面回执为准：JS 里填失败的不算成功，不能再拿"我们认为的"糊弄用户
+            val ok = value != null && q.qid !in missed
+            // 字数仍不达标的，把实际情况写在答案后面，别让用户以为合格了
+            val lenNote = if (value != null && q.type == QType.SHORT) {
+                LengthRules.parse(q.stem)?.let { rule ->
+                    if (rule.fits(value)) null
+                    else "（实际 ${LengthRules.count(value)} 字，要求 ${rule.describe}）"
+                }
+            } else {
+                null
+            }
+            AnswerRow(
+                number = no,
+                typeLabel = q.typeLabel.ifBlank { typeName(q.type) },
+                stem = q.stem.take(80),
+                answer = readable(q, value, solved?.note) + (lenNote ?: ""),
+                ok = ok,
+            )
+        }
+
+        val done = items.size - missed.size
+        steps = steps.stepDone(3, "回填 $done/${items.size}")
+        stage = Stage.Done
+        generated = true
+        phase = if (optimized) "优化完成：$done/${items.size} 题已更新" else "完成：回填 $done/${items.size} 题"
+        stat = buildString {
+            if (optimized) append("优化后回填 $done/${items.size} 题") else append("回填 $done/${items.size} 题")
+            val noAnswer = planned.count { it.third?.value == null }
+            if (noAnswer > 0) append("，$noAnswer 题 AI 没给答案")
+            if (missed.isNotEmpty()) append("，${missed.size} 题页面没接受（可能需要手动填）")
+            append("。核对后请自己点提交。")
+        }
+        message = stat
+        return done
+    }
+
+    /**
      * 跑一轮作答。
      *
      * @param fresh true = 清空已答的、整卷重来；false = 只补上次没成功的题
-     * @param prompt 本次要用的系统提示词（用户在弹窗里改过就传新的）。
-     *               null = 用已保存的（自定义或内置默认）
      */
-    fun runGenerate(fresh: Boolean, prompt: String? = null) {
+    fun runGenerate(fresh: Boolean) {
         val web = webView ?: run {
             message = "页面还没准备好"
             return
@@ -487,6 +592,9 @@ fun WorkAnswerScreen(
             if (fresh) {
                 rows = emptyList()
                 answerCache = emptyMap()
+                // 整卷重来后，旧的撤销点与旧对话都失去意义，留着只会误导
+                undoStack = emptyList()
+                chat = if (chat.isEmpty()) chat else chat + ChatTurn(ChatRole.NOTE, "已重新生成，之前的要求不再作为上下文")
                 generated = false
                 reasoning = null
                 stat = ""
@@ -498,6 +606,8 @@ fun WorkAnswerScreen(
             val html = readHtml(web)
             steps = steps.stepDone(0).stepNow(1)
             val questions = QuestionParser.parse(html)
+            // 缓存下来给多轮优化用：优化时页面可能已经变了，别重新解析
+            questionsCache = questions
             if (questions.isEmpty()) {
                 steps = steps.stepFail(1, "没解析到题目")
                 stage = Stage.Idle
@@ -525,7 +635,7 @@ fun WorkAnswerScreen(
                 "还有 ${targets.size} 题没答上，正在补"
             }
             message = phase
-            val result = when (val r = ai.answer(targets, prompt ?: ai.effectivePrompt())) {
+            val result = when (val r = ai.answer(targets)) {
                 is Cx.Ok -> r.data
                 is Cx.Fail -> {
                     steps = steps.stepFail(2, "接口失败")
@@ -578,94 +688,7 @@ fun WorkAnswerScreen(
                 if (best.isNotBlank()) effective[q.qid] = listOf(best)
             }
 
-            // 先把 AI 给的答案列出来（此时还不知道能不能填进去）
-            val planned = questions.mapIndexed { index, q ->
-                val given = effective[q.qid]
-                val solved = if (given == null) null else AnswerMapper.toAnswer(q, given)
-                /*
-                 * 最后一道闸。
-                 *
-                 * 上游（AiClient）已经洗过一遍，这里再洗一遍是刻意的**双保险**：
-                 * 一旦哪条路径漏了清洗，代价是把提示词写进作答框、学生直接提交——
-                 * 比"这题没答案"的代价大得多。清洗不过就当作没答案，交给人工补。
-                 */
-                val guarded = solveTextGuard(q, solved)
-                Triple(index + 1, q, guarded)
-            }
-
-            val items = ArrayList<FillItem>()
-            planned.forEach { (_, q, solved) ->
-                val v = solved?.value ?: return@forEach
-                items += FillItem(q.qid, q.type, splitValues(q.type, v))
-            }
-
-            if (items.isEmpty()) {
-                steps = steps.stepDone(2).stepFail(3, "没有可用答案")
-                stage = Stage.Idle
-                phase = "AI 没给出可用答案"
-                message = "AI 没给出可用答案，检查模型是否可用"
-                rows = planned.map { (no, q, solved) ->
-                    AnswerRow(no, q.typeLabel.ifBlank { typeName(q.type) }, q.stem.take(80),
-                        solved?.note ?: "无答案", false)
-                }
-                return@launch
-            }
-
-            steps = steps.stepDone(2).stepNow(3)
-            stage = Stage.Filling
-            phase = "回填 ${items.size} 题"
-            message = "正在回填 ${items.size} 题"
-            val receipt = evalJs(web, FillScript.build(items)).orEmpty()
-            var missed = parseMissed(receipt)
-
-            // 富文本编辑器是**异步初始化**的：页面刚打开时实例还没建好，
-            // 第一次写入可能落空。没填上的题等 400ms 再补一次，通常就成功了。
-            if (missed.isNotEmpty()) {
-                kotlinx.coroutines.delay(400)
-                val retry = items.filter { it.qid in missed }
-                if (retry.isNotEmpty()) {
-                    val again = evalJs(web, FillScript.build(retry)).orEmpty()
-                    val stillMissed = parseMissed(again)
-                    missed = missed - (retry.map { it.qid }.toSet() - stillMissed)
-                }
-            }
-
-            rows = planned.map { (no, q, solved) ->
-                val value = solved?.value
-                // 以页面回执为准：JS 里填失败的不算成功，不能再拿"我们认为的"糊弄用户
-                val ok = value != null && q.qid !in missed
-                // 字数仍不达标的，把实际情况写在答案后面，别让用户以为合格了
-                val lenNote = if (value != null && q.type == QType.SHORT) {
-                    LengthRules.parse(q.stem)?.let { rule ->
-                        if (rule.fits(value)) null
-                        else "（实际 ${LengthRules.count(value)} 字，要求 ${rule.describe}）"
-                    }
-                } else {
-                    null
-                }
-                AnswerRow(
-                    number = no,
-                    typeLabel = q.typeLabel.ifBlank { typeName(q.type) },
-                    stem = q.stem.take(80),
-                    answer = readable(q, value, solved?.note) + (lenNote ?: ""),
-                    ok = ok,
-                )
-            }
-
-            val done = items.size - missed.size
-            steps = steps.stepDone(3, "回填 $done/${items.size}")
-            stage = Stage.Done
-            generated = true
-            generating = false
-            phase = "完成：回填 $done/${items.size} 题"
-            stat = buildString {
-                append("回填 $done/${items.size} 题")
-                val noAnswer = planned.count { it.third?.value == null }
-                if (noAnswer > 0) append("，$noAnswer 题 AI 没给答案")
-                if (missed.isNotEmpty()) append("，${missed.size} 题页面没接受（可能需要手动填）")
-                append("。核对后请自己点提交。")
-            }
-            message = stat
+            fillAndReport(web, questions, effective)
             } catch (e: kotlinx.coroutines.CancellationException) {
                 throw e
             } catch (e: Exception) {
@@ -1118,11 +1141,137 @@ fun WorkAnswerScreen(
         }
     }
 
-    /*
-     * AI 作答窗口（0.9.0 起是居中弹窗，不再是底部抽屉）。
+    /** 撤销/优化开始时把四个阶段重置成"已完成前三步、正在回填" */
+    fun stepPhaseReset() {
+        steps = listOf(
+            GenStep("读取作答页", GenStepState.DONE),
+            GenStep("解析题目", GenStepState.DONE, "共 ${questionsCache.size} 题"),
+            GenStep("AI 按你的要求修改", GenStepState.DONE),
+            GenStep("回填到页面", GenStepState.NOW),
+        )
+    }
+
+    /**
+     * 一轮"按要求优化"。
      *
-     * 内容与交互都搬进 AiAnswerModal：状态、生成过程、提示词编辑、思考过程、逐题结果。
-     * 这里只负责把状态和回调接起来。
+     * 流程刻意做得可预期：
+     * 1. 输入为空 / 还没答案 / 没解析出题目 —— 直接在输入框下面给一句话，不发请求；
+     * 2. 用户那句话先进对话记录（他能看到自己提了什么）；
+     * 3. 把**当前答案**整卷丢给 AI 改，模型返回整卷 → 整体覆盖；
+     * 4. 覆盖前先把旧版压进 [undoStack]，所以随时能撤销；
+     * 5. 覆盖后立刻重新回填页面，答案区与网页里都是新的那版。
+     */
+    fun runOptimize() {
+        if (generating) return
+        val text = chatInput.trim()
+        val web = webView
+        when {
+            text.isEmpty() -> {
+                // 明确说"为什么没发出去"，而不是让发送键静默失败
+                chatHint = "先输入一句要改什么，比如「简答再短一点」"
+                return
+            }
+            answerCache.isEmpty() -> {
+                chatHint = "还没有答案可以改，先点【开始作答】生成一版"
+                return
+            }
+            questionsCache.isEmpty() -> {
+                chatHint = "题目还没读到，先点【重新生成】读一次页面"
+                return
+            }
+            web == null -> {
+                chatHint = "作答页不在了，返回重进这一页再试"
+                return
+            }
+        }
+
+        chatHint = null
+        val history = chat.filter { it.role == ChatRole.USER }.map { it.text }
+        chat = chat + ChatTurn(ChatRole.USER, text)
+        chatInput = ""
+
+        scope.launch {
+            sheetOpen = true
+            generating = true
+            steps = listOf(
+                GenStep("读取作答页", GenStepState.DONE),
+                GenStep("解析题目", GenStepState.DONE, "共 ${questionsCache.size} 题"),
+                GenStep("AI 按你的要求修改", GenStepState.NOW),
+                GenStep("回填到页面", GenStepState.WAIT),
+            )
+            try {
+                phase = "AI 正在按你的要求修改"
+                message = phase
+                when (val r = ai.refine(questionsCache, answerCache, history, text)) {
+                    is Cx.Ok -> {
+                        // 只覆盖模型实际返回的题：没提到的题保住上一版，不会被空值冲掉
+                        val merged = LinkedHashMap(answerCache)
+                        r.data.answers.forEach { (qid, v) -> if (v.isNotEmpty()) merged[qid] = v }
+                        undoStack = undoStack + answerCache
+                        answerCache = merged
+                        steps = steps.stepDone(2, "改了 ${r.data.answers.size} 题")
+                        val done = fillAndReport(web, questionsCache, merged, optimized = true)
+                        chat = chat + ChatTurn(
+                            ChatRole.NOTE,
+                            if (done >= 0) "已更新 ${r.data.answers.size} 题并回填，可以继续提要求"
+                            else "AI 改完了，但页面没接受任何答案，看看是不是已经交卷",
+                        )
+                    }
+                    is Cx.Fail -> {
+                        steps = steps.stepFailNow()
+                        phase = "优化失败"
+                        chat = chat + ChatTurn(ChatRole.NOTE, "这次没改成：${r.detail}")
+                    }
+                    Cx.NeedLogin -> {
+                        steps = steps.stepFailNow()
+                        phase = "优化失败"
+                        chat = chat + ChatTurn(ChatRole.NOTE, "优化不需要登录态，请检查 AI 配置")
+                    }
+                }
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                steps = steps.stepFailNow()
+                phase = "优化出错"
+                chat = chat + ChatTurn(
+                    ChatRole.NOTE,
+                    "优化出错：${e.message ?: e::class.java.simpleName}（答案还是上一版，没被改坏）",
+                )
+            } finally {
+                generating = false
+            }
+        }
+    }
+
+    /**
+     * 撤销上一轮优化。
+     *
+     * 只回退**答案**，不回退对话记录——用户要能看到"我撤销了什么"，
+     * 否则点一下画面变了、记录里还写着"已更新 3 题"，看着像出错。
+     */
+    fun undoOptimize() {
+        if (generating) return
+        val prev = undoStack.lastOrNull() ?: return
+        val web = webView ?: return
+        undoStack = undoStack.dropLast(1)
+        answerCache = prev
+        chat = chat + ChatTurn(ChatRole.NOTE, "已撤销上一轮优化，回到之前那版答案")
+        scope.launch {
+            sheetOpen = true
+            generating = true
+            try {
+                stepPhaseReset()
+                fillAndReport(web, questionsCache, prev, optimized = true)
+            } finally {
+                generating = false
+            }
+        }
+    }
+
+    /*
+     * AI 作答窗口（0.9.0 起是居中弹窗；0.9.1 把"改提示词"换成了对话式优化）。
+     *
+     * 这里只把状态与回调接起来：状态、生成过程、思考过程、逐题结果、优化对话都在弹窗里。
      */
     if (sheetOpen) {
         AiAnswerModal(
@@ -1134,26 +1283,17 @@ fun WorkAnswerScreen(
             reasoning = reasoning,
             rows = rows,
             generating = generating,
-            promptDraft = promptDraft,
-            promptOpen = promptOpen,
-            promptDirty = promptDirty,
-            promptCustom = promptCustom,
-            onTogglePrompt = { promptOpen = !promptOpen },
-            onPromptChange = { promptDraft = it },
-            onResetPrompt = {
-                // 恢复默认是"撤销"，不需要用户再按一次应用：直接清掉已保存的自定义
-                ai.setCustomPrompt(null)
-                savedPrompt = AiPrompt.SYSTEM
-                promptDraft = AiPrompt.SYSTEM
-                promptCustom = false
+            chat = chat,
+            chatInput = chatInput,
+            chatHint = chatHint,
+            canUndo = undoStack.isNotEmpty(),
+            onChatInput = {
+                chatInput = it
+                // 一动手就清掉上一次的"没输入"提示，别让红字一直挂着
+                if (chatHint != null) chatHint = null
             },
-            onApplyAndRegenerate = {
-                // 明确的两步：先落盘提示词，再重新生成。不点就只是草稿
-                ai.setCustomPrompt(promptDraft)
-                savedPrompt = ai.effectivePrompt()
-                promptCustom = ai.usingCustomPrompt()
-                runGenerate(fresh = true, prompt = savedPrompt)
-            },
+            onSend = { runOptimize() },
+            onUndo = { undoOptimize() },
             onRegenerate = { runGenerate(fresh = true) },
             onDismiss = { sheetOpen = false },
         )

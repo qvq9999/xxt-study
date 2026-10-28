@@ -131,36 +131,6 @@ class AiClient(
         return if (c.usable) c else null
     }
 
-    // ---------------- 自定义系统提示词 ----------------
-
-    /**
-     * 用户改过的系统提示词；null 表示用内置的 [AiPrompt.SYSTEM]。
-     *
-     * 为什么允许改：模型对"怎么写答案"的偏好差得很远——有的爱写套话、有的爱列要点，
-     * 而提示词是唯一能调这个的旋钮。默认提示词已经能用了，但用户对自己课程的
-     * 评分习惯更清楚，让他能在答题页直接改、直接重试，比逼他去改源码合理。
-     *
-     * 只放**系统提示**：整卷的 user 消息里带着题目 JSON 和输出格式约定，
-     * 那部分改了会直接破坏解析（模型不按 JSON 回就全盘皆输）。
-     */
-    fun customPrompt(): String? = secrets.get(KEY_PROMPT)?.takeIf { it.isNotBlank() }
-
-    /** 传回内置默认（null 或空白）即恢复默认 */
-    fun setCustomPrompt(prompt: String?) {
-        val v = prompt?.trim().orEmpty()
-        if (v.isEmpty() || v == AiPrompt.SYSTEM.trim()) {
-            secrets.remove(KEY_PROMPT)
-        } else {
-            secrets.put(KEY_PROMPT, v)
-        }
-    }
-
-    /** 当前真正会送出去的提示词，界面拿它做初始值 */
-    fun effectivePrompt(): String = customPrompt() ?: AiPrompt.SYSTEM
-
-    /** 现在是自定义的还是内置默认 */
-    fun usingCustomPrompt(): Boolean = customPrompt() != null
-
     fun clear() {
         AiProviders.all.forEach { p ->
             secrets.remove(keyBase(p.id))
@@ -171,7 +141,6 @@ class AiClient(
         secrets.remove(LEGACY_BASE)
         secrets.remove(LEGACY_KEY)
         secrets.remove(LEGACY_MODEL)
-        secrets.remove(KEY_PROMPT)
     }
 
     private fun keyBase(id: String) = "ai_" + id + "_base"
@@ -206,13 +175,8 @@ class AiClient(
      * 整卷一次问完而不是逐题问：既省 token（同一门课的题往往同源），
      * 也让模型能利用卷内的上下文。代价是单次请求更大，用 120 秒超时兜住。
      *
-     * @param systemPrompt 系统提示。默认取用户自定义（没改过就是内置的 [AiPrompt.SYSTEM]）；
-     *                     重试时由界面把编辑框里的新提示词直接传进来，**不必先保存**
      */
-    suspend fun answer(
-        questions: List<Question>,
-        systemPrompt: String = effectivePrompt(),
-    ): Cx<AiResult> {
+    suspend fun answer(questions: List<Question>): Cx<AiResult> {
         if (questions.isEmpty()) return Cx.Ok(AiResult(emptyMap(), null, ""))
         val cfg = config() ?: return Cx.Fail(Cx.Kind.DENIED, "还没配置 AI 接口，先去设置里填 Base URL / 密钥 / 模型")
 
@@ -225,7 +189,7 @@ class AiClient(
             put("messages", buildJsonArray {
                 add(buildJsonObject {
                     put("role", "system")
-                    put("content", systemPrompt.trim().ifBlank { AiPrompt.SYSTEM })
+                    put("content", AiPrompt.SYSTEM)
                 })
                 add(buildJsonObject {
                     put("role", "user")
@@ -247,6 +211,62 @@ class AiClient(
                 Cx.Fail(Cx.Kind.NETWORK, "AI 接口超时（120s）")
             } catch (e: IOException) {
                 Cx.Fail(Cx.Kind.NETWORK, e.message ?: "AI 接口连接失败")
+            } catch (e: Exception) {
+                Cx.Fail(Cx.Kind.UNKNOWN, e.message ?: e::class.java.simpleName)
+            }
+        }
+    }
+
+    /**
+     * 多轮优化：拿"当前这一版答案"再按用户的话改一遍。
+     *
+     * 与 [answer] 的区别只在提示词与入参——**解析、清洗、失败处理完全共用**，
+     * 所以模型不管怎么乱回（复述要求、抄题干、只回半卷），都不会有第二套漏洞。
+     *
+     * @param current 当前答案（界面上的"已经生成出来的内容"）
+     * @param history 之前几轮用户要求，按时间顺序
+     * @param instruction 本次要求（输入框里那句话）
+     */
+    suspend fun refine(
+        questions: List<Question>,
+        current: Map<String, List<String>>,
+        history: List<String>,
+        instruction: String,
+    ): Cx<AiResult> {
+        if (questions.isEmpty()) return Cx.Fail(Cx.Kind.PARSE, "没有题目可优化")
+        if (current.isEmpty()) return Cx.Fail(Cx.Kind.DENIED, "还没有答案可以优化，先点【开始作答】")
+        val cfg = config() ?: return Cx.Fail(Cx.Kind.DENIED, "还没配置 AI 接口")
+
+        val payload = buildJsonObject {
+            put("model", cfg.model)
+            // 优化要按人话改，纯 0 会让它过度保守、几乎不动
+            put("temperature", 0.2)
+            put("max_tokens", 4096)
+            put("messages", buildJsonArray {
+                add(buildJsonObject {
+                    put("role", "system")
+                    put("content", AiPrompt.REFINE_SYSTEM)
+                })
+                add(buildJsonObject {
+                    put("role", "user")
+                    put("content", AiPrompt.refine(questions, current, history, instruction))
+                })
+            })
+        }.toString()
+
+        return withContext(Dispatchers.IO) {
+            try {
+                withTimeout(120_000) {
+                    val resp = postJson(cfg, payload)
+                    if (resp.code !in 200..299) {
+                        return@withTimeout Cx.Fail(Cx.Kind.DENIED, "AI 接口返回 HTTP ${resp.code}：${resp.body.take(160)}")
+                    }
+                    parseAnswers(resp.body, questions)
+                }
+            } catch (e: kotlinx.coroutines.TimeoutCancellationException) {
+                Cx.Fail(Cx.Kind.NETWORK, "优化超时（120s）")
+            } catch (e: IOException) {
+                Cx.Fail(Cx.Kind.NETWORK, e.message ?: "连接失败")
             } catch (e: Exception) {
                 Cx.Fail(Cx.Kind.UNKNOWN, e.message ?: e::class.java.simpleName)
             }
@@ -510,7 +530,6 @@ class AiClient(
 
     private companion object {
         const val KEY_ACTIVE = "ai_active_provider"
-        const val KEY_PROMPT = "ai_custom_prompt"
         const val LEGACY_BASE = "ai_base_url"
         const val LEGACY_KEY = "ai_api_key"
         const val LEGACY_MODEL = "ai_model"

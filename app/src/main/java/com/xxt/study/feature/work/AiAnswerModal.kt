@@ -8,7 +8,6 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -24,7 +23,6 @@ import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.xxt.study.core.ai.AiPrompt
 import com.xxt.study.core.ui.AppModal
 import com.xxt.study.core.ui.ModalButton
 import com.xxt.study.core.ui.Palette
@@ -55,17 +53,29 @@ internal data class GenStep(
     val detail: String = "",
 )
 
+/** 优化对话里的一条记录 */
+internal enum class ChatRole { USER, AI, NOTE }
+
+internal data class ChatTurn(
+    val role: ChatRole,
+    val text: String,
+)
+
+/** 输入框占位文案：给两个真实可用的例子，比"请输入要求"有用 */
+internal const val CHAT_PLACEHOLDER = "说说要改什么：简答再短一点 / 第3题改成要点式"
+
 /**
  * AI 作答窗口。
  *
- * 0.9.0 起由底部抽屉改成居中弹窗（[AppModal]）。除了原来的"结果 + 思考过程"，
- * 新增两块：
+ * 0.9.0 起是居中弹窗（[AppModal]）；0.9.1 把"改提示词"换成**对话式优化**。
  *
- * 1. **生成过程**：五个阶段逐个点亮，AI 阶段带已等待秒数——
- *    原来只有一个 `phase` 字符串原地变，用户看不出"卡住了还是在跑"；
- * 2. **提示词**：默认是内置的系统提示（`AiPrompt.SYSTEM`），可点【编辑提示词】改，
- *    改完按【应用并重新生成】。**改完不点等于没改**，这两步刻意分开，
- *    免得边打字边触发请求、把 token 烧在草稿上。
+ * 为什么要换：提示词是给"工程师"用的旋钮，用户想表达的是"这段写太长""第 3 题别那么口语"，
+ * 一句话说清楚最快。所以现在：
+ *
+ * - 底部常驻输入框（放在 footer 里，不跟着内容滚，键盘弹起也不会被推走）
+ * - 每说一句就是一轮优化：AI 拿**当前答案**改，改完覆盖回同一个答案区并重新回填到页面
+ * - 每一轮都进 [chat]，用户能看到自己提过什么、AI 改了几题
+ * - 改坏了可以【撤销本次优化】回到上一版（[canUndo]）
  */
 @Composable
 internal fun AiAnswerModal(
@@ -77,15 +87,13 @@ internal fun AiAnswerModal(
     reasoning: String?,
     rows: List<AnswerRow>,
     generating: Boolean,
-    promptDraft: String,
-    promptOpen: Boolean,
-    promptDirty: Boolean,
-    /** 已保存的提示词是不是用户自定义的（决定收起时那一行怎么写） */
-    promptCustom: Boolean,
-    onTogglePrompt: () -> Unit,
-    onPromptChange: (String) -> Unit,
-    onResetPrompt: () -> Unit,
-    onApplyAndRegenerate: () -> Unit,
+    chat: List<ChatTurn>,
+    chatInput: String,
+    chatHint: String?,
+    canUndo: Boolean,
+    onChatInput: (String) -> Unit,
+    onSend: () -> Unit,
+    onUndo: () -> Unit,
     onRegenerate: () -> Unit,
     onDismiss: () -> Unit,
 ) {
@@ -94,18 +102,66 @@ internal fun AiAnswerModal(
         subtitle = modelLabel,
         onDismiss = onDismiss,
         footer = {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                if (promptOpen) {
-                    ModalButton("恢复默认", enabled = !generating, onClick = onResetPrompt)
-                    Spacer(Modifier.weight(1f))
+            Column {
+                // ---- 输入框：常驻在底部，不参与内容滚动 ----
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Box(
+                        modifier = Modifier
+                            .weight(1f)
+                            .clip(RoundedCornerShape(10.dp))
+                            .background(Palette.bg)
+                            .padding(horizontal = 10.dp, vertical = 8.dp),
+                    ) {
+                        if (chatInput.isEmpty()) {
+                            Text(
+                                text = CHAT_PLACEHOLDER,
+                                fontSize = 11.sp,
+                                color = Palette.weak,
+                                maxLines = 1,
+                            )
+                        }
+                        BasicTextField(
+                            value = chatInput,
+                            onValueChange = onChatInput,
+                            enabled = !generating,
+                            singleLine = true,
+                            textStyle = TextStyle(fontSize = 12.sp, color = Palette.ink),
+                            cursorBrush = SolidColor(Palette.brand),
+                            modifier = Modifier.fillMaxWidth(),
+                        )
+                    }
+                    Spacer(Modifier.size(8.dp))
+                    /*
+                     * 发送键在"没输入"时**也保持可点**：点了会给出明确提示。
+                     * 灰掉不给反馈的按钮，只会让用户以为坏了。
+                     */
                     ModalButton(
-                        text = if (generating) "生成中…" else "应用并重新生成",
+                        text = if (generating) "优化中…" else "发送",
                         primary = true,
                         enabled = !generating,
-                        onClick = onApplyAndRegenerate,
+                        onClick = onSend,
                     )
-                } else {
-                    ModalButton("编辑提示词", enabled = !generating, onClick = onTogglePrompt)
+                }
+
+                if (chatHint != null) {
+                    Text(
+                        text = chatHint,
+                        fontSize = 10.sp,
+                        color = Palette.alarm,
+                        lineHeight = 14.sp,
+                        modifier = Modifier.padding(top = 4.dp),
+                    )
+                }
+
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(top = 6.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    if (canUndo) {
+                        ModalButton("撤销本次优化", enabled = !generating, onClick = onUndo)
+                    }
                     Spacer(Modifier.weight(1f))
                     ModalButton(
                         text = when {
@@ -113,7 +169,6 @@ internal fun AiAnswerModal(
                             rows.isEmpty() -> "开始作答"
                             else -> "重新生成"
                         },
-                        primary = true,
                         enabled = !generating,
                         onClick = onRegenerate,
                     )
@@ -162,79 +217,6 @@ internal fun AiAnswerModal(
             }
         }
 
-        // ---------- 提示词编辑 ----------
-        if (promptOpen) {
-            Spacer(Modifier.height(12.dp))
-            SectionTitle("提示词")
-            Text(
-                text = "这是发给模型的系统提示。改完点【应用并重新生成】才会生效；" +
-                    "不想改就点【恢复默认】回到内置版本。",
-                fontSize = 10.sp,
-                color = Palette.weak,
-                lineHeight = 15.sp,
-                modifier = Modifier.padding(top = 2.dp, bottom = 6.dp),
-            )
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .clip(RoundedCornerShape(10.dp))
-                    .background(Palette.bg)
-                    .padding(horizontal = 10.dp, vertical = 8.dp),
-            ) {
-                if (promptDraft.isEmpty()) {
-                    Text(
-                        text = "在这里写系统提示…",
-                        fontSize = 11.sp,
-                        color = Palette.weak,
-                    )
-                }
-                /*
-                 * 不用自带滚动的高度限制：输入框只设最小高度，让它随内容长高，
-                 * 由弹窗统一滚动。否则框内框外两层滚动，改一段长提示词时会很难受。
-                 */
-                BasicTextField(
-                    value = promptDraft,
-                    onValueChange = onPromptChange,
-                    enabled = !generating,
-                    textStyle = TextStyle(fontSize = 11.sp, color = Palette.ink, lineHeight = 17.sp),
-                    cursorBrush = SolidColor(Palette.brand),
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .heightIn(min = 130.dp),
-                )
-            }
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(top = 6.dp),
-                horizontalArrangement = Arrangement.spacedBy(6.dp),
-            ) {
-                Text(
-                    text = when {
-                        promptDirty -> "已修改，尚未应用——点右下角【应用并重新生成】"
-                        promptCustom -> "当前是自定义提示词（已保存）"
-                        else -> "当前是内置默认提示词"
-                    },
-                    fontSize = 10.sp,
-                    color = if (promptDirty) Palette.alarm else Palette.weak,
-                    lineHeight = 14.sp,
-                )
-            }
-        } else {
-            Spacer(Modifier.height(10.dp))
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Text(
-                    text = when {
-                        promptDirty -> "提示词：有未应用的修改"
-                        promptCustom -> "提示词：自定义"
-                        else -> "提示词：内置默认"
-                    },
-                    fontSize = 10.sp,
-                    color = if (promptDirty) Palette.alarm else Palette.weak,
-                )
-            }
-        }
-
         // ---------- 思考过程 ----------
         Spacer(Modifier.height(12.dp))
         SectionTitle("思考过程")
@@ -262,7 +244,7 @@ internal fun AiAnswerModal(
             )
         }
 
-        // ---------- 逐题结果 ----------
+        // ---------- 逐题结果（答案区）----------
         if (rows.isNotEmpty()) {
             Spacer(Modifier.height(12.dp))
             SectionTitle("逐题结果")
@@ -297,6 +279,19 @@ internal fun AiAnswerModal(
             }
         }
 
+        // ---------- 优化记录（紧挨底部输入框）----------
+        if (chat.isNotEmpty() || generating) {
+            Spacer(Modifier.height(12.dp))
+            SectionTitle("优化记录")
+            chat.forEach { turn -> ChatBubble(turn) }
+            if (generating) {
+                ChatBubble(
+                    ChatTurn(ChatRole.AI, "正在按你的要求修改…（已等待 ${elapsedSec}s）"),
+                    pending = true,
+                )
+            }
+        }
+
         Spacer(Modifier.height(4.dp))
     }
 }
@@ -310,6 +305,57 @@ private fun SectionTitle(text: String) {
         color = Palette.sub,
         modifier = Modifier.padding(bottom = 4.dp),
     )
+}
+
+/** 一轮对话：用户要求靠右、AI 回应靠左、系统注记整行灰字 */
+@Composable
+private fun ChatBubble(turn: ChatTurn, pending: Boolean = false) {
+    when (turn.role) {
+        ChatRole.NOTE -> Text(
+            text = turn.text,
+            fontSize = 10.sp,
+            color = Palette.weak,
+            lineHeight = 14.sp,
+            modifier = Modifier.padding(vertical = 3.dp),
+        )
+
+        ChatRole.USER -> Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(vertical = 3.dp),
+            horizontalArrangement = Arrangement.End,
+        ) {
+            Text(
+                text = turn.text,
+                fontSize = 11.sp,
+                color = Palette.ink,
+                lineHeight = 16.sp,
+                modifier = Modifier
+                    .weight(1f, fill = false)
+                    .clip(RoundedCornerShape(10.dp))
+                    .background(Palette.brandSoft)
+                    .padding(horizontal = 10.dp, vertical = 7.dp),
+            )
+        }
+
+        ChatRole.AI -> Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(vertical = 3.dp),
+        ) {
+            Text(
+                text = turn.text,
+                fontSize = 11.sp,
+                color = if (pending) Palette.brand else Palette.sub,
+                lineHeight = 16.sp,
+                modifier = Modifier
+                    .weight(1f, fill = false)
+                    .clip(RoundedCornerShape(10.dp))
+                    .background(Palette.bg)
+                    .padding(horizontal = 10.dp, vertical = 7.dp),
+            )
+        }
+    }
 }
 
 /** 一个阶段：圆点 + 标题（+ 等待秒数） */

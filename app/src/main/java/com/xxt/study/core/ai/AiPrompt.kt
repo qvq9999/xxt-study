@@ -39,28 +39,8 @@ internal object AiPrompt {
      * `length` 字段只给简答题：模型看到"150-250 字"这种显式区间，比在规则里笼统说一句管用得多。
      */
     fun user(questions: List<Question>): String {
-        val arr = buildJsonArray {
-            for (q in questions) {
-                add(buildJsonObject {
-                    put("id", q.qid)
-                    put("type", typeName(q.type))
-                    // 带上题型标签（"单选题/论述题"），模型对中文题型标签的把握比英文 key 更准
-                    if (q.typeLabel.isNotBlank()) put("kind", q.typeLabel)
-                    put("stem", q.stem)
-                    if (q.options.isNotEmpty()) {
-                        put("options", buildJsonArray {
-                            q.options.forEach { o ->
-                                add("${o.letter.ifBlank { "-" }}. ${o.text}")
-                            }
-                        })
-                    }
-                    if (q.type == QType.FILL) put("blanks", q.blanks.coerceAtLeast(1))
-                    if (q.type == QType.SHORT) {
-                        LengthRules.parse(q.stem)?.let { put("length", it.describe) }
-                    }
-                })
-            }
-        }
+        // 题目 JSON 与多轮优化共用一份，避免两处字段慢慢跑偏
+        val arr = questionArray(questions)
         return """
             题目（JSON 数组）：
             $arr
@@ -85,6 +65,104 @@ internal object AiPrompt {
             第一行就是 {，不要在 JSON 前后复述本段文字。
         """.trimIndent()
     }
+
+    /**
+     * 多轮优化的系统提示。
+     *
+     * 与 [SYSTEM] 的分工：那份负责"从零作答"，这份只负责"按要求改已有的答案"。
+     * 三条硬约束都是这段功能特有的：
+     *
+     * 1. **返回整卷**：只要模型回整卷，界面就能整体覆盖——不用去猜"它这轮到底改了哪几题"；
+     * 2. **没提到的题原样放回**：否则用户说"第 3 题短一点"，模型会把整卷重写一遍，
+     *    行为不可预期，而且上一轮调好的东西会被冲掉；
+     * 3. **不许把对话文字写进答案**：和 [SYSTEM] 同一个坑——"已按你的要求修改"这类话
+     *    一旦进了作答框，学生可能直接提交。
+     */
+    const val REFINE_SYSTEM: String =
+        "你是课程作业答案的修改助手。用户会对已经生成好的答案提出修改要求，" +
+            "常见的是：写短一些、更口语、改成要点式、术语换英文、补充某个方面。" +
+            "你只输出 JSON，不要解释、不要 Markdown、不要复述要求。" +
+            "你返回的必须是**整卷的最终答案**：用户要求改的题按要求改，没提到的题**原样返回**，" +
+            "不要顺手改动，也不要重新发挥。" +
+            "改完的答案仍要满足题干本身的要求（字数区间、先判断后说明等）。" +
+            "答案正文里只能有能直接提交给老师的内容，不许出现修改要求、规则说明、题号、" +
+            "\"已按你的要求修改\"这类对话文字。"
+
+    /**
+     * 多轮优化的一轮请求。
+     *
+     * @param current 当前这一版答案（界面上的"已经生成出来的内容"）
+     * @param history 之前几轮用户提过的要求，按时间顺序；给模型做上下文用，
+     *                否则用户说"再短一点"，模型不知道是相对哪个版本
+     * @param instruction 本次要求（用户在输入框里打的那句话）
+     */
+    fun refine(
+        questions: List<Question>,
+        current: Map<String, List<String>>,
+        history: List<String>,
+        instruction: String,
+    ): String {
+        val qArr = questionArray(questions)
+        val aArr = buildJsonArray {
+            for (q in questions) {
+                val given = current[q.qid] ?: continue
+                add(buildJsonObject {
+                    put("id", q.qid)
+                    put("answer", buildJsonArray { given.forEach { add(it) } })
+                })
+            }
+        }
+        val historyText = if (history.isEmpty()) {
+            "（无，这是第一轮修改）"
+        } else {
+            history.mapIndexed { i, s -> "${i + 1}. $s" }.joinToString("\n")
+        }
+        return """
+            题目（JSON 数组）：
+            $qArr
+
+            当前答案（JSON 数组，个别题可能还没有答案）：
+            $aArr
+
+            之前几轮的要求（按时间顺序，供理解上下文）：
+            $historyText
+
+            本次要求：
+            ${instruction.trim()}
+
+            只输出整卷的最终答案，格式和之前一样：
+            {"answers":[{"id":"题目id","answer":["答案"]}]}
+
+            规则：
+            - 本次要求涉及的题：按要求修改，同时仍要满足题干里的字数/格式约束
+            - 本次要求没提到的题：把当前答案**原样**放回去，一个字都不要改
+            - 只输出 JSON；第一行就是 {，不要在前后写"好的""已修改"之类的话
+        """.trimIndent()
+    }
+
+    /** 题目 JSON 数组：整卷作答与多轮优化共用，保证两处题目信息完全一致 */
+    private fun questionArray(questions: List<Question>): String = buildJsonArray {
+        for (q in questions) {
+            add(buildJsonObject {
+                put("id", q.qid)
+                put("type", typeName(q.type))
+                // 带上题型标签（"单选题/论述题"），模型对中文题型标签的把握比英文 key 更准
+                if (q.typeLabel.isNotBlank()) put("kind", q.typeLabel)
+                put("stem", q.stem)
+                if (q.options.isNotEmpty()) {
+                    put("options", buildJsonArray {
+                        q.options.forEach { o ->
+                            add("${o.letter.ifBlank { "-" }}. ${o.text}")
+                        }
+                    })
+                }
+                if (q.type == QType.FILL) put("blanks", q.blanks.coerceAtLeast(1))
+                if (q.type == QType.SHORT) {
+                    LengthRules.parse(q.stem)?.let { put("length", it.describe) }
+                }
+            })
+        }
+    }.toString()
 
     /**
      * 单题重写。

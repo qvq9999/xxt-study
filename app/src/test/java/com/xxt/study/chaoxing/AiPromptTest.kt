@@ -82,6 +82,74 @@ class AiPromptTest {
         assertTrue("要给出建议目标", text.contains("建议写到"))
     }
 
+    // ---------- 多轮优化（0.9.1） ----------
+
+    @Test
+    fun `优化提示要带上当前答案`() {
+        val q1 = q("简述实践是检验真理的唯一标准", type = QType.SHORT)
+        val text = AiPrompt.refine(
+            questions = listOf(q1),
+            current = mapOf("q1" to listOf("这是第一版答案")),
+            history = emptyList(),
+            instruction = "再短一点",
+        )
+        assertTrue("要有当前答案那一段", text.contains("当前答案"))
+        assertTrue("要把答案正文带进去", text.contains("这是第一版答案"))
+        assertTrue("要带上本次要求", text.contains("再短一点"))
+        assertTrue("第一轮要明确说明", text.contains("第一轮"))
+    }
+
+    @Test
+    fun `优化提示要列出之前几轮的要求`() {
+        val text = AiPrompt.refine(
+            questions = listOf(q("谈谈你的看法（150-250字）")),
+            current = mapOf("q1" to listOf("答案")),
+            history = listOf("写短一点", "改成要点式"),
+            instruction = "再加个例子",
+        )
+        assertTrue(text.contains("1. 写短一点"))
+        assertTrue(text.contains("2. 改成要点式"))
+        assertTrue(text.contains("再加个例子"))
+    }
+
+    @Test
+    fun `优化提示要求没提到的题原样返回`() {
+        val text = AiPrompt.refine(
+            questions = listOf(q("题目A")),
+            current = mapOf("q1" to listOf("答案A")),
+            history = emptyList(),
+            instruction = "只改第1题",
+        )
+        // 这一条是"不要顺手把别的题改坏"的唯一约束，缺了就会整卷漂移
+        assertTrue("必须写明没提到的题原样返回", text.contains("原样"))
+    }
+
+    @Test
+    fun `优化提示仍然要求只输出 JSON`() {
+        val text = AiPrompt.refine(
+            questions = listOf(q("题目A")),
+            current = mapOf("q1" to listOf("答案A")),
+            history = emptyList(),
+            instruction = "改一下",
+        )
+        assertTrue(text.contains("answers"))
+        assertTrue("要禁止对话式回复", AiPrompt.REFINE_SYSTEM.contains("只输出 JSON"))
+    }
+
+    @Test
+    fun `题目 JSON 抽取后整卷提示没丢字段`() {
+        // questionArray 抽成公共函数后，user() 仍要带题干、选项、字数
+        val prompt = AiPrompt.user(
+            listOf(
+                q("结合材料谈谈看法（150-250字）", type = QType.SHORT),
+                q("下列说法正确的是", type = QType.SINGLE, options = listOf(QOption("A", "A", "甲"))),
+            ),
+        )
+        assertTrue(prompt.contains("结合材料谈谈看法"))
+        assertTrue(prompt.contains("A. 甲"))
+        assertTrue(prompt.contains("150-250 字"))
+    }
+
     @Test
     fun `建议字数取区间中上部`() {
         // 贴下限最容易因数标点差异掉出范围，所以往中间偏上取
