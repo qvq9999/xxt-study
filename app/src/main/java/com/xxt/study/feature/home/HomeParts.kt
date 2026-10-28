@@ -50,7 +50,11 @@ internal fun TodoBlock(todo: Int, subtitle: String) {
 }
 
 @Composable
-internal fun ErrorBanner(message: String) {
+internal fun ErrorBanner(
+    message: String,
+    actionText: String? = null,
+    onAction: (() -> Unit)? = null,
+) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -70,8 +74,25 @@ internal fun ErrorBanner(message: String) {
             text = message,
             fontSize = 12.sp,
             color = Palette.alarm,
-            modifier = Modifier.padding(start = 8.dp),
+            lineHeight = 17.sp,
+            modifier = Modifier
+                .padding(start = 8.dp)
+                .weight(1f),
         )
+        if (actionText != null && onAction != null) {
+            Text(
+                text = actionText,
+                fontSize = 12.sp,
+                fontWeight = FontWeight.Medium,
+                color = Palette.alarm,
+                modifier = Modifier
+                    .padding(start = 8.dp)
+                    .clip(RoundedCornerShape(8.dp))
+                    .background(Palette.card)
+                    .clickable(onClick = onAction)
+                    .padding(horizontal = 10.dp, vertical = 5.dp),
+            )
+        }
     }
 }
 

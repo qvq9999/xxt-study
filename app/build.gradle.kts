@@ -42,11 +42,11 @@ android {
         applicationId = "com.xxt.study"
         minSdk = 26
         targetSdk = 37
-        // 0.7.0：启动权限引导（通知 + 安装未知应用）、检查更新即时反馈、
-        //        更新可后台下载（关弹窗不中断）+ 完成通知 + 随时重开弹窗
+        // 0.7.1：修「升级/隔一会儿打开就必弹风控」——撤回升级清缓存、保鲜期 12→30 分钟、
+        //        单次最多扫 12 门、撞上即熔断；并修「验证完还是用不了」（Cookie 同名覆盖）
         // versionCode 每次发布必须递增，否则覆盖安装会被拒，内置更新也会判成"没有新版"
-        versionCode = 18
-        versionName = "0.7.0"
+        versionCode = 19
+        versionName = "0.7.1"
     }
 
     buildTypes {

@@ -191,8 +191,12 @@ fun VerifyScreen(
                 ).show()
                 return@evaluateJavascript
             }
-            // 导 Cookie + 标记完成，逻辑统一在 VerifyGate
-            val n = VerifyGate.finish(cookies, url)
+            // 导 Cookie + 标记完成，逻辑统一在 VerifyGate。
+            //
+            // 传**当前页面地址**而不是进来时那个 url：风控验证常常会把页面导到
+            // passport2 之类的域上完成，新会话落在那个域；拿旧的触发地址去合并，
+            // 会让失效的旧 JSESSIONID 覆盖掉刚拿到的新会话（"验证完还是用不了"的根因之一）。
+            val n = VerifyGate.finish(cookies, webView.url ?: url)
             importing = false
             if (n > 0) {
                 Toast.makeText(ctx, "验证凭据已同步（$n 条），正在继续", Toast.LENGTH_SHORT).show()

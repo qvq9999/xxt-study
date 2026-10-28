@@ -41,6 +41,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.xxt.study.core.net.VerifyGate
 import com.xxt.study.core.ui.Icons24
 import com.xxt.study.core.ui.Palette
 import com.xxt.study.core.ui.agoText
@@ -114,7 +115,18 @@ fun HomeScreen(
             )
         }
 
-        state.error?.let { ErrorBanner(it) }
+        state.error?.let { err ->
+            ErrorBanner(
+                message = err,
+                // 风控失败才好意思放"重新验证"：别的失败（网络/解析）点了也没用
+                actionText = if (state.verifyBlocked) "重新验证" else null,
+                onAction = if (state.verifyBlocked) {
+                    { VerifyGate.forceReopen() }
+                } else {
+                    null
+                },
+            )
+        }
 
         // 登录态失效不再自动跳回登录页（会与登录页的自动检测形成来回跳），
         // 改成明确的入口，由用户决定什么时候重新登录。

@@ -82,6 +82,10 @@ object VerifyGate {
     @Volatile
     private var lastPassedAt = 0L
 
+    /** 上一次"举手"的页面地址，用于 [forceReopen] 重新打开同一个页面 */
+    @Volatile
+    private var lastUrl: String = FALLBACK_URL
+
     /**
      * 报告"这里被风控了"。
      *
@@ -105,12 +109,15 @@ object VerifyGate {
              * "现在 + 60 秒"——他永远等不到恢复，等于被永久关在门外。
              */
             if (!inCooldown(now)) cooldownUntil = now + GUARD_COOLDOWN_MS
+            lastUrl = pageUrlOf(url)
             _suspected.tryEmit(Unit)
             return false
         }
 
         startCooldown(now)
-        _pending.value = pageUrlOf(url)
+        val page = pageUrlOf(url)
+        lastUrl = page
+        _pending.value = page
         return true
     }
 
@@ -177,32 +184,73 @@ object VerifyGate {
      * 新落下的风控 Cookie。不导回的话，用户明明验证成功了，后面的请求照样被拒——
      * 症状就是"点完继续又弹验证"，因为下一次请求依然被服务端拦。
      *
-     * 取 Cookie 时**按多个入口域各取一遍再合并**：风控页经常在 `passport2` 或
-     * `i.chaoxing.com` 下落 Cookie，只按最初触发风控的那个页面地址取，可能一条都取不到。
+     * ## 为什么 [pageUrl] 必须是"验证完成时所在的页面"
+     *
+     * 内部会把多个域的 Cookie 拼成一串交给 [CookieStore.importHeader]，
+     * 而它是**按名字覆盖**的：同一个 `JSESSIONID` 谁在后面谁生效。
+     *
+     * 学习通每个子域都有各自的 `JSESSIONID`。风控验证是在 `passport2` 之类的页面上完成的，
+     * 新的会话落在**那个域**；而最初触发风控的往往是 `mooc1` 的课程页，
+     * 那里的 `JSESSIONID` 早就被判定无效了。
+     *
+     * 旧实现把"触发风控的 url"放在拼接序列最后，等于**让失效的旧会话盖掉刚拿到的新会话**，
+     * 于是 OkHttp 拿着旧 session 继续请求 → 又被拦 → 用户看到"验证完了还是用不了"。
+     *
+     * 现在由调用方传**当前页面**的地址，并把它排在最后（优先级最高）。
      *
      * @return 导入了多少条，0 表示 WebView 那边没有新 Cookie（可能本来就不需要）
      */
-    fun finish(cookies: CookieStore, url: String): Int {
+    fun finish(cookies: CookieStore, pageUrl: String): Int {
         runCatching { CookieManager.getInstance().flush() }
 
+        /*
+         * 只认学习通自己的域。
+         *
+         * 万一验证页跳到了别的地方（某些机构的风控是第三方域名），
+         * 拿它去算父域会把 Cookie 挂到一个八竿子打不着的域上，等于白导。
+         * 这种情况退回首页，至少保证 Cookie 落在 chaoxing.com 下。
+         */
+        val source = pageUrl.takeIf { it.contains("chaoxing.com", ignoreCase = true) }
+            ?: FALLBACK_URL
+
+        // 顺序决定同名覆盖：越靠后优先级越高。
+        // 先铺各主域做填充，最后用"验证完成的那个页面"定音。
         val merged = COOKIE_PROBE_URLS.asSequence()
-            .plus(url)
+            .plus(source)
             .mapNotNull { u -> runCatching { CookieManager.getInstance().getCookie(u) }.getOrNull() }
             .filter { it.isNotBlank() }
             .joinToString("; ")
 
-        val n = runCatching { cookies.importHeader(merged, url) }.getOrDefault(0)
+        val n = runCatching { cookies.importHeader(merged, source) }.getOrDefault(0)
         markPassed()
         return n
     }
 
-    /** 导 Cookie 时挨个探一遍的入口域，见 [finish] */
+    /**
+     * 导 Cookie 时挨个探一遍的入口域，见 [finish]。
+     *
+     * `passport2` 排最后（优先级最高）：风控验证绝大多数发生在这个域，
+     * 新会话也落在它上面。`mooc1` 放最前，只当兜底填充。
+     */
     private val COOKIE_PROBE_URLS = listOf(
         "https://mooc1.chaoxing.com/",
-        "https://passport2.chaoxing.com/",
-        "https://i.chaoxing.com/",
         "https://mooc2-ans.chaoxing.com/",
+        "https://i.chaoxing.com/",
+        "https://passport2.chaoxing.com/",
     )
+
+    /**
+     * 用户主动要求"再验证一次"。
+     *
+     * 保护期和冷却一起清掉：他已经看到了"验证似乎没生效"的提示并主动来点，
+     * 这时候还用 45 秒保护期拦着，就是把人锁死在门外。
+     *
+     * 重新打开上一次那个页面（拿不到就回首页），不用调用方操心传什么地址。
+     */
+    fun forceReopen(now: Long = System.currentTimeMillis()): Boolean {
+        approveAgain()
+        return request(lastUrl, now)
+    }
 
     // ---------------- 冷却 ----------------
 

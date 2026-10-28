@@ -164,6 +164,33 @@ class VerifyLoopTest {
     }
 
     @Test
+    fun `主动重新验证要能同时突破保护期和冷却`() {
+        /*
+         * 这是"验证完还是用不了"的出口。
+         *
+         * 用户点完继续 → 重试仍被拦 → 界面上给一句"验证似乎没生效" + 【重新验证】。
+         * 如果这个按钮也被保护期/冷却挡住，用户就被彻底锁死了，
+         * 只能干等，而且不知道该等多久。
+         */
+        VerifyGate.markPassed(t0)
+        VerifyGate.request("https://mooc1.chaoxing.com/a", t0 + 1_000) // 被保护期拦，进 60 秒冷却
+        assertFalse("保护期内不能自动弹", VerifyGate.request("https://mooc1.chaoxing.com/a", t0 + 2_000))
+        assertTrue("此刻正在冷却", VerifyGate.inCooldown(t0 + 2_000))
+
+        assertTrue("用户主动点【重新验证】必须立刻能弹", VerifyGate.forceReopen(t0 + 3_000))
+        assertNotNull(VerifyGate.pending.value)
+    }
+
+    @Test
+    fun `重新验证打开的还是上次那个页面`() {
+        VerifyGate.request("https://mooc1.chaoxing.com/my/course/42", t0)
+        VerifyGate.cancel()
+
+        VerifyGate.forceReopen(t0 + 10_000)
+        assertEquals("https://mooc1.chaoxing.com/my/course/42", VerifyGate.pending.value)
+    }
+
+    @Test
     fun `取消只关窗口，冷却继续生效`() {
         VerifyGate.request("https://mooc1.chaoxing.com/a", t0)
         VerifyGate.cancel()

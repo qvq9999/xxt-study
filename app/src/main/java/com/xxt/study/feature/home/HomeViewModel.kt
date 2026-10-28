@@ -20,6 +20,13 @@ data class HomeUiState(
     val progress: String? = null,
     val error: String? = null,
     val needLogin: Boolean = false,
+    /**
+     * 这次失败是风控引起的。
+     *
+     * 有它才敢在错误条上放【重新验证】：否则"验证却被保护期挡住"的时候，
+     * 用户只能干等 60 秒冷却，反复点刷新也只会看到同一条冷却提示。
+     */
+    val verifyBlocked: Boolean = false,
 )
 
 class HomeViewModel(app: Application) : AndroidViewModel(app) {
@@ -69,13 +76,24 @@ class HomeViewModel(app: Application) : AndroidViewModel(app) {
             }
             when (result) {
                 is Cx.Ok -> _state.update {
-                    it.copy(snapshot = result.data, loading = false, progress = null, error = null)
+                    it.copy(
+                        snapshot = result.data,
+                        loading = false,
+                        progress = null,
+                        error = null,
+                        verifyBlocked = false,
+                    )
                 }
                 is Cx.NeedLogin -> _state.update {
-                    it.copy(loading = false, progress = null, needLogin = true)
+                    it.copy(loading = false, progress = null, needLogin = true, verifyBlocked = false)
                 }
                 is Cx.Fail -> _state.update {
-                    it.copy(loading = false, progress = null, error = result.detail)
+                    it.copy(
+                        loading = false,
+                        progress = null,
+                        error = result.detail,
+                        verifyBlocked = result.kind == Cx.Kind.VERIFY,
+                    )
                 }
             }
         }

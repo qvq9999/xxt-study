@@ -1,13 +1,13 @@
 {
-  "versionCode": 18,
-  "versionName": "0.7.0",
+  "versionCode": 19,
+  "versionName": "0.7.1",
   "sizeBytes": 2519388,
-  "sha256": "c2ffac04f9767c10f8dd9ed2f8dbec9b0d2b5d4e2ddffe31af840631a1f8d856",
+  "sha256": "4f6630d3319fd6860385dca588a99402c55f07fa5f33e255f431e6c021ecc2fb",
   "notes": [
-    "启动权限引导",
-    "更新可后台下载",
-    "下载完成发通知"
+    "单次只扫12门防触发风控",
+    "撤回升级清缓存",
+    "修验证后仍无法使用"
   ],
   "packageName": "com.xxt.study",
-  "url": "https://github.com/qvq9999/xxt-study/releases/download/v0.7.0/app-release.apk"
+  "url": "https://github.com/qvq9999/xxt-study/releases/download/v0.7.1/app-release.apk"
 }

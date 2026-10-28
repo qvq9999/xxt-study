@@ -1,8 +1,6 @@
 package com.xxt.study
 
 import android.app.Application
-import android.content.Context
-import android.os.Build
 import com.xxt.study.core.ai.AiClient
 import com.xxt.study.core.crypto.SecretStore
 import com.xxt.study.core.font.QuizFont
@@ -30,42 +28,22 @@ class App : Application() {
     override fun onCreate() {
         super.onCreate()
         /*
-         * 版本升级后清一次快照缓存。
+         * ⚠️ 这里**不再**"版本升级清一次快照缓存"（0.6.0 加过，0.7.1 撤回）。
          *
-         * 用户明确选了这个代价：状态判定口径改了（结课 / 已截止 / 剩余0分钟），
-         * 旧缓存里存的是按旧口径算出来的 status 和 todoCount，
-         * 留着它会让升级后的第一次打开**仍然是错的**，而且还要等 12 分钟保鲜期过去。
+         * 当时的想法是：状态判定口径变了，旧缓存里存的是旧口径的结果，清掉重扫能让
+         * 状态立刻正确。但漏算了一件事——**"全量重扫"本身就是最容易触发风控的行为**：
+         * 41 门课 × 两跳导航 = 82 个页面请求，短时间密集打上去，几乎必被拦。
+         * 平时增量刷新只扫 0~2 门，用户从来不会遇到；一升级就清缓存 → 必扫 41 门 → 必被风控。
+         * 结果就是"每次更新完，一打开就卡在验证码页"，比红点多几个难看得多。
          *
-         * 清掉之后第一次打开会全量重扫（41 门课，几十秒），换来状态立刻正确。
-         * 登录态、AI Key、刷课设置都存在别的地方，一概不动。
+         * 现在的取舍：**不清缓存**。
+         * - 作业状态（可提交/已截止/待批阅）是运行时用 `Work.view()` 算的，旧缓存照样算得对；
+         * - 唯一受影响的是课程结课标记（旧缓存没有这个字段，默认 false），
+         *   会在下一次增量刷新（12 分钟保鲜期后）自然修正，多几个红点但不影响使用。
+         *
+         * 结论：**不为了一次性正确去换一次必然的风控。**
          */
-        purgeSnapshotOnUpgrade()
         container = Container(this)
-    }
-
-    private fun purgeSnapshotOnUpgrade() {
-        val prefs = getSharedPreferences(META, Context.MODE_PRIVATE)
-        val current = runCatching {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
-                packageManager.getPackageInfo(packageName, 0).longVersionCode
-            } else {
-                @Suppress("DEPRECATION")
-                packageManager.getPackageInfo(packageName, 0).versionCode.toLong()
-            }
-        }.getOrDefault(-1L)
-        if (current <= 0) return
-
-        val last = prefs.getLong(KEY_LAST_VERSION, -1L)
-        if (last == current) return
-
-        // 首次安装也会走到这条：本来就没缓存，清一次无副作用
-        SnapshotCache(this).clear()
-        prefs.edit().putLong(KEY_LAST_VERSION, current).apply()
-    }
-
-    private companion object {
-        const val META = "app_meta"
-        const val KEY_LAST_VERSION = "last_version_code"
     }
 }
 
