@@ -56,6 +56,7 @@ class StudyRunner(
 ) {
 
     suspend fun runCourse(course: Course): Cx<RunSummary> {
+        VerifyGate.cooldownText()?.let { return Cx.Fail(Cx.Kind.VERIFY, it) }
         val uid = client.uid()
             ?: return Cx.Fail(Cx.Kind.DENIED, "缺少 _uid，登录态不完整，请重新登录")
         val fid = client.fid()

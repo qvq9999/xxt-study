@@ -63,8 +63,7 @@ object Parsers {
      */
     fun looksLikeVerify(html: String): Boolean {
         if (html.isBlank()) return false
-        val head = html.take(30_000)
-        return VERIFY_WORDS.any { head.contains(it) }
+        return VERIFY_RE.containsMatchIn(html.take(30_000))
     }
 
     /**
@@ -82,9 +81,29 @@ object Parsers {
         )
     }
 
-    private val VERIFY_WORDS = listOf(
-        "请输入验证码", "输入验证码", "拖动滑块", "滑动验证", "拖动下方滑块",
-        "人机验证", "安全验证", "完成验证", "captcha", "验证码校验",
+    /**
+     * 风控页关键词。
+     *
+     * 用正则而不是整句匹配，是被真实页面教过一次：学习通给的是
+     * 「操作异常，请输入图片中的验证码」，而旧词表里只有「请输入验证码」——
+     * 中间多了"图片中的"四个字就整条失效，验证窗口永远弹不出来。
+     * 所以允许"请输入/请填写" 和 "验证码" 之间插几个字。
+     *
+     * 同时避开误伤：登录页有「验证码登录」，课程页可能有「验证码技术」，
+     * 这些都不带"请输入/请填写"前缀，不会命中。
+     *
+     * ⚠️ 改这里要同步改 `ScanProbes.VERIFY_CHECK`（那个跑在 WebView 里）。
+     */
+    private val VERIFY_RE = Regex(
+        "请(?:输入|填写).{0,8}验证码" +
+            "|拖动.{0,6}滑块" +
+            "|滑动验证" +
+            "|人机验证" +
+            "|安全验证" +
+            "|完成验证" +
+            "|验证码(?:错误|不正确|已失效|已过期)" +
+            "|captcha",
+        RegexOption.IGNORE_CASE,
     )
 
     private val FAIL_WORDS = listOf(

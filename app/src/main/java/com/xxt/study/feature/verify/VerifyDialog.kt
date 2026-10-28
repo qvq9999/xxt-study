@@ -2,7 +2,6 @@ package com.xxt.study.feature.verify
 
 import android.annotation.SuppressLint
 import android.graphics.Bitmap
-import android.webkit.CookieManager
 import android.webkit.WebResourceRequest
 import android.webkit.WebSettings
 import android.webkit.WebView
@@ -41,6 +40,7 @@ import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import com.xxt.study.core.net.CookieStore
 import com.xxt.study.core.net.Http
+import com.xxt.study.core.net.VerifyGate
 import com.xxt.study.core.ui.Palette
 
 /**
@@ -119,10 +119,8 @@ fun VerifyDialog(
 
     fun finish() {
         importing = true
-        // flush 一次，确保 WebView 里的风控 Cookie 已经落盘再读
-        runCatching { CookieManager.getInstance().flush() }
-        val header = runCatching { CookieManager.getInstance().getCookie(url) }.getOrNull().orEmpty()
-        val n = runCatching { cookies.importHeader(header, url) }.getOrDefault(0)
+        // 导 Cookie + 标记完成，逻辑统一放在 VerifyGate，避免这几处各写一份
+        val n = VerifyGate.finish(cookies, url)
         importing = false
         if (n > 0) {
             Toast.makeText(ctx, "验证凭据已同步（$n 条），正在继续", Toast.LENGTH_SHORT).show()

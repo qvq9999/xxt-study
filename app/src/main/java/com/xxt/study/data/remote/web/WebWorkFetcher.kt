@@ -26,6 +26,7 @@ import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import java.io.ByteArrayInputStream
 import kotlin.coroutines.resume
+import kotlin.random.Random
 
 /**
  * 用隐藏 WebView 取作业列表。
@@ -74,6 +75,17 @@ class WebWorkFetcher(
      * 几百毫秒），成功路径一分钱不花。宁可慢，也不能让人看到"全部超时"。
      */
     suspend fun fetch(course: Course): Cx<List<Work>> = withContext(Dispatchers.Main) {
+        // 冷却期一个请求都不发：风控是按请求特征累积的，越刷越紧
+        VerifyGate.cooldownText()?.let { return@withContext Cx.Fail(Cx.Kind.VERIFY, it) }
+
+        /*
+         * 课程之间抖一下再开下一个页面。
+         *
+         * 纯顺序加载也会被看出规律（每门课间隔几乎一样），加 250~650ms 随机间隔
+         * 让节奏更接近人在翻页。代价很小：一次全量扫描多十几秒。
+         */
+        delay(Random.nextLong(THROTTLE_MIN_MS, THROTTLE_MAX_MS))
+
         val pooled = pool.acquire()
         val first = try {
             fetchOn(pooled, course)
@@ -331,7 +343,13 @@ class WebWorkFetcher(
     }
 
     private companion object {
-        const val DEFAULT_POOL = 3
+        /**
+         * 并发数：**1**。
+         *
+         * 3 路并发在服务端看来就是同一账号三个浏览器同时开页面，是最明显的脚本特征。
+         * 串行扫描慢一些，但换来的是不触发风控——比"快但被封"划算。
+         */
+        const val DEFAULT_POOL = 1
 
         /**
          * 单跳最长等待。
@@ -341,6 +359,10 @@ class WebWorkFetcher(
          */
         const val POLL_TIMEOUT_MS = 12_000L
         const val POLL_INTERVAL_MS = 150L
+
+        /** 课程之间的随机间隔，模拟人工翻页节奏 */
+        const val THROTTLE_MIN_MS = 250L
+        const val THROTTLE_MAX_MS = 650L
 
         /** "页面完整但没有目标元素"要保持这么久才认可，躲开 302 链里的 HTML 中间页 */
         const val DONE_HOLD_MS = 3_000L

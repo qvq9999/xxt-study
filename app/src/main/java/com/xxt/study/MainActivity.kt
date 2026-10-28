@@ -120,6 +120,7 @@ class MainActivity : ComponentActivity() {
                             course = studyCourse!!,
                             controller = container.study,
                             ai = container.ai,
+                            cookies = container.cookies,
                             onBack = { studyCourse = null },
                             onOpenSettings = { showSettings = true },
                         )

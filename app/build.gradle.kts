@@ -42,11 +42,11 @@ android {
         applicationId = "com.xxt.study"
         minSdk = 26
         targetSdk = 37
-        // 0.5.0：刷课日志按课程隔离、课程页改 Dialog 修滑动跳动、AI 作答按钮可回窗、
-        //        字数重写加强、模型快捷切换、风控验证码浮层（原版页面 + 自动续跑）
+        // 0.5.1：课程页移出 Dialog 修"点不动"、验证码识别放宽（请输入图片中的验证码）、
+        //        刷新默认增量（长按全量）、并发降为 1、触发风控后 5 分钟冷却
         // versionCode 每次发布必须递增，否则覆盖安装会被拒
-        versionCode = 13
-        versionName = "0.5.0"
+        versionCode = 14
+        versionName = "0.5.1"
     }
 
     buildTypes {

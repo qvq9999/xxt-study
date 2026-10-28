@@ -2,13 +2,16 @@ package com.xxt.study.feature.study
 
 import android.annotation.SuppressLint
 import android.graphics.Bitmap
-import android.view.ViewGroup
+import android.os.Message
+import android.view.View
+import android.webkit.WebChromeClient
 import android.webkit.WebResourceError
 import android.webkit.WebResourceRequest
 import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import android.widget.Toast
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -22,7 +25,6 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
-import androidx.compose.foundation.layout.systemBarsPadding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -48,11 +50,11 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
-import androidx.compose.ui.window.Dialog
-import androidx.compose.ui.window.DialogProperties
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.xxt.study.core.ai.AiClient
+import com.xxt.study.core.net.CookieStore
 import com.xxt.study.core.net.Http
+import com.xxt.study.core.net.VerifyGate
 import com.xxt.study.core.study.StudyController
 import com.xxt.study.core.ui.Icons24
 import com.xxt.study.core.ui.Palette
@@ -63,15 +65,20 @@ import com.xxt.study.feature.ai.AiSwitchSheet
 /**
  * 刷课页。
  *
- * 三个刻意的设计：
+ * ## 课程页面为什么不做成弹窗
  *
- * 1. **日志按课程隔离**。以前只有一份全局日志，刷完 A 课再点开 B 课的刷课页，
- *    看到的还是 A 的日志和计数，人会以为 B 已经在跑。现在日志以课程为键，
- *    页面上只出现这门课自己的记录。
- * 2. **日志就放在正文**，不再单独开「全部日志」窗口——默认展示的东西不该再藏一层。
- * 3. **课程页面用 Dialog 而不是底部弹层**。底部弹层自带下滑关闭手势，
- *    会跟 WebView 的纵向滚动抢手势，表现就是"页面往下滑、窗口跟着跳"。
- *    Dialog 没有这个手势，滚动完全交给网页自己。
+ * 之前用 `ModalBottomSheet`：下滑手势和网页滚动抢，页面往下滑窗口跟着跳。
+ * 改成 `Dialog`：不再跳了，但**点不动**——WebView 需要一个正常的宿主窗口，
+ * 放进 Dialog 再反复摘挂，触摸事件会丢；而且当时没设 `WebChromeClient`，
+ * 学习通那种 `window.open` / `alert` 驱动的"进入章节"会被静默丢弃。
+ *
+ * 现在是**同屏分层**：WebView 从进入页面到离开页面一直在组合里，
+ * 只切 `visibility`。不摘挂、不重载、不换窗口，触摸走的就是最普通的那条路。
+ *
+ * ## 日志按课程隔离
+ *
+ * `StudyUiState.logs` 以课程为键。以前只有一份全局日志，刷完 A 课点开 B 课
+ * 看到的是 A 的记录和计数，人会以为 B 已经在跑。
  */
 @SuppressLint("SetJavaScriptEnabled")
 @OptIn(ExperimentalMaterial3Api::class)
@@ -80,6 +87,7 @@ fun StudyScreen(
     course: Course,
     controller: StudyController,
     ai: AiClient,
+    cookies: CookieStore,
     onBack: () -> Unit,
     onOpenSettings: () -> Unit = {},
 ) {
@@ -92,11 +100,14 @@ fun StudyScreen(
     val mine = state.belongsTo(key)
     val log = state.logFor(key)
 
-    var showWeb by remember { mutableStateOf(false) }
+    /** true = 显示课程网页，false = 显示日志。切换只改可见性，不销毁 WebView */
+    var webMode by remember { mutableStateOf(false) }
     var showAiLog by remember { mutableStateOf(false) }
     var showAiSwitch by remember { mutableStateOf(false) }
     var loaded by remember { mutableStateOf(false) }
     var webError by remember { mutableStateOf<String?>(null) }
+    /** 可见页面里出现了验证码（我们自己检测，不依赖隐藏扫描） */
+    var pageVerify by remember { mutableStateOf(false) }
 
     // 模型信息要读密钥库，用版本号缓存，别在每帧重组里读
     var aiTick by remember { mutableStateOf(0) }
@@ -115,10 +126,6 @@ fun StudyScreen(
             "&cpi=${course.cpi}&ismooc2=1&v=2"
     }
 
-    /*
-     * 页面实例只建一次。不能在 AndroidView 的 factory 里 loadUrl ——
-     * 那正是"每次打开都刷新"的来源。打开/关闭只是把它挂到不同的父容器上。
-     */
     val webView = remember {
         WebView(ctx).apply {
             settings.javaScriptEnabled = true
@@ -130,7 +137,9 @@ fun StudyScreen(
             settings.loadWithOverviewMode = true
             settings.cacheMode = WebSettings.LOAD_DEFAULT
             settings.mixedContentMode = WebSettings.MIXED_CONTENT_COMPATIBILITY_MODE
-            settings.setSupportMultipleWindows(false)
+            // 学习通有些入口是 window.open 出来的，必须允许，否则点了没反应
+            settings.setSupportMultipleWindows(true)
+            settings.javaScriptCanOpenWindowsAutomatically = true
             // PC 页面字小，允许双指放大
             settings.setSupportZoom(true)
             settings.builtInZoomControls = true
@@ -147,6 +156,15 @@ fun StudyScreen(
 
                 override fun onPageStarted(view: WebView?, url: String?, favicon: Bitmap?) {
                     webError = null
+                    pageVerify = false
+                }
+
+                override fun onPageFinished(view: WebView?, url: String?) {
+                    // 在我们自己看得见的这个页面里也查一遍风控：验证码就长在这儿，
+                    // 只靠隐藏扫描的探针是看不见的
+                    view?.evaluateJavascript(VERIFY_PROBE) { v ->
+                        pageVerify = v?.contains('1') == true
+                    }
                 }
 
                 override fun onReceivedError(
@@ -156,6 +174,40 @@ fun StudyScreen(
                 ) {
                     if (request?.isForMainFrame != true) return
                     webError = error?.description?.toString().orEmpty().ifBlank { "页面加载失败" }
+                }
+            }
+
+            /*
+             * 必须设 WebChromeClient。
+             *
+             * 不设的时候：alert/confirm 被静默吞掉，window.open 直接返回 null。
+             * 学习通"点章节 → 打开视频页"这类交互大量依赖它们，表现就是"页面点不动"。
+             */
+            webChromeClient = object : WebChromeClient() {
+                override fun onCreateWindow(
+                    view: WebView?,
+                    isDialog: Boolean,
+                    isUserGesture: Boolean,
+                    resultMsg: Message?,
+                ): Boolean {
+                    val host = view ?: return false
+                    val transport = resultMsg?.obj as? WebView.WebViewTransport ?: return false
+                    // 不新开窗口（那会变成另一个界面/浏览器），让新窗口的内容在本 WebView 里打开
+                    val temp = WebView(host.context).apply {
+                        webViewClient = object : WebViewClient() {
+                            override fun shouldOverrideUrlLoading(
+                                v: WebView?,
+                                request: WebResourceRequest?,
+                            ): Boolean {
+                                request?.url?.toString()?.let { host.loadUrl(it) }
+                                runCatching { v?.destroy() }
+                                return true
+                            }
+                        }
+                    }
+                    transport.webView = temp
+                    resultMsg.sendToTarget()
+                    return true
                 }
             }
         }
@@ -171,13 +223,16 @@ fun StudyScreen(
         }
     }
 
-    // 第一次打开才真正发请求：没看过就不花这趟流量
-    LaunchedEffect(showWeb) {
-        if (showWeb && !loaded) {
+    // 第一次进网页模式才真正发请求：没看过就不花这趟流量
+    LaunchedEffect(webMode) {
+        if (webMode && !loaded) {
             loaded = true
             webView.loadUrl(courseUrl)
         }
     }
+
+    // 网页模式下返回键先退回日志，而不是直接退出刷课页
+    BackHandler(enabled = webMode) { webMode = false }
 
     Column(
         modifier = Modifier
@@ -196,7 +251,11 @@ fun StudyScreen(
                     .size(40.dp)
                     .clip(RoundedCornerShape(10.dp))
                     .clickable {
-                        // 返回只是离开页面，任务还在前台服务里跑；不说一声用户会以为点了返回就停了
+                        if (webMode) {
+                            webMode = false
+                            return@clickable
+                        }
+                        // 返回只是离开页面，任务还在前台服务里跑
                         if (state.running) {
                             Toast.makeText(ctx, "刷课在后台继续，通知栏可查看进度", Toast.LENGTH_SHORT).show()
                         }
@@ -221,6 +280,7 @@ fun StudyScreen(
                 )
                 Text(
                     text = when {
+                        webMode -> "课程页面 · 仅供查看"
                         mine && state.running -> "刷课中，可切后台"
                         !mine && state.running -> "另一门课正在刷"
                         else -> "未运行"
@@ -229,241 +289,215 @@ fun StudyScreen(
                     color = if (state.running) Palette.ok else Palette.weak,
                 )
             }
-            // 快捷切换模型：不用为了换个模型退回设置页
-            Box(
-                modifier = Modifier
-                    .clip(RoundedCornerShape(9.dp))
-                    .background(Palette.card)
-                    .clickable { showAiSwitch = true }
-                    .padding(horizontal = 10.dp, vertical = 7.dp),
-            ) {
-                Text(
-                    text = "AI · $activeLabel",
-                    fontSize = 11.sp,
-                    color = if (savedModels.isEmpty()) Palette.weak else Palette.sub,
-                    maxLines = 1,
-                )
-            }
-        }
-
-        // ---- 状态卡 ----
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 20.dp)
-                .clip(RoundedCornerShape(14.dp))
-                .background(Palette.card)
-                .padding(14.dp),
-        ) {
-            Text(
-                text = when {
-                    mine -> state.statusLine
-                    state.running -> "另一门课正在刷：${state.courseName}"
-                    log.isNotEmpty() -> "本课未在运行（下面是上一次的记录）"
-                    else -> "本课未开始"
-                },
-                fontSize = 13.sp,
-                fontWeight = FontWeight.Medium,
-                color = Palette.ink,
-                lineHeight = 19.sp,
-            )
-            Spacer(Modifier.height(10.dp))
-            LinearProgressIndicator(
-                progress = { if (mine) state.fraction.coerceIn(0f, 1f) else 0f },
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(4.dp)
-                    .clip(RoundedCornerShape(2.dp)),
-                color = Palette.brand,
-                trackColor = Palette.line,
-            )
-            Spacer(Modifier.height(12.dp))
-            Row(horizontalArrangement = Arrangement.spacedBy(18.dp)) {
-                Count("完成", if (mine) state.done else 0, Palette.ok)
-                Count(
-                    "失败",
-                    if (mine) state.failed else 0,
-                    if (mine && state.failed > 0) Palette.alarm else Palette.weak,
-                )
-                Count("跳过", if (mine) state.skipped else 0, Palette.weak)
-            }
-
-            Spacer(Modifier.height(12.dp))
-            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                if (state.running) {
-                    Pill(text = "停止", primary = false, onClick = controller::stop)
-                } else {
-                    Pill(
-                        text = when {
-                            mine && (state.finished || state.done + state.failed > 0) -> "重新开始"
-                            log.isNotEmpty() -> "重新开始"
-                            else -> "开始刷课"
-                        },
-                        primary = true,
-                        onClick = { controller.start(course) },
+            if (webMode) {
+                TinyAction("刷新页面") {
+                    webError = null
+                    webView.reload()
+                }
+            } else {
+                // 快捷切换模型：不用为了换个模型退回设置页
+                Box(
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(9.dp))
+                        .background(Palette.card)
+                        .clickable { showAiSwitch = true }
+                        .padding(horizontal = 10.dp, vertical = 7.dp),
+                ) {
+                    Text(
+                        text = "AI · $activeLabel",
+                        fontSize = 11.sp,
+                        color = if (savedModels.isEmpty()) Palette.weak else Palette.sub,
+                        maxLines = 1,
                     )
                 }
             }
+        }
 
-            if (mine) {
-                state.error?.let {
-                    Spacer(Modifier.height(10.dp))
-                    Text(text = it, fontSize = 12.sp, color = Palette.alarm, lineHeight = 18.sp)
+        if (!webMode) {
+            // ---- 状态卡 ----
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 20.dp)
+                    .clip(RoundedCornerShape(14.dp))
+                    .background(Palette.card)
+                    .padding(14.dp),
+            ) {
+                Text(
+                    text = when {
+                        mine -> state.statusLine
+                        state.running -> "另一门课正在刷：${state.courseName}"
+                        log.isNotEmpty() -> "本课未在运行（下面是上一次的记录）"
+                        else -> "本课未开始"
+                    },
+                    fontSize = 13.sp,
+                    fontWeight = FontWeight.Medium,
+                    color = Palette.ink,
+                    lineHeight = 19.sp,
+                )
+                Spacer(Modifier.height(10.dp))
+                LinearProgressIndicator(
+                    progress = { if (mine) state.fraction.coerceIn(0f, 1f) else 0f },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(4.dp)
+                        .clip(RoundedCornerShape(2.dp)),
+                    color = Palette.brand,
+                    trackColor = Palette.line,
+                )
+                Spacer(Modifier.height(12.dp))
+                Row(horizontalArrangement = Arrangement.spacedBy(18.dp)) {
+                    Count("完成", if (mine) state.done else 0, Palette.ok)
+                    Count(
+                        "失败",
+                        if (mine) state.failed else 0,
+                        if (mine && state.failed > 0) Palette.alarm else Palette.weak,
+                    )
+                    Count("跳过", if (mine) state.skipped else 0, Palette.weak)
+                }
+
+                Spacer(Modifier.height(12.dp))
+                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    if (state.running) {
+                        Pill(text = "停止", primary = false, onClick = controller::stop)
+                    } else {
+                        Pill(
+                            text = when {
+                                mine && (state.finished || state.done + state.failed > 0) -> "重新开始"
+                                log.isNotEmpty() -> "重新开始"
+                                else -> "开始刷课"
+                            },
+                            primary = true,
+                            onClick = { controller.start(course) },
+                        )
+                    }
+                }
+
+                if (mine) {
+                    state.error?.let {
+                        Spacer(Modifier.height(10.dp))
+                        Text(text = it, fontSize = 12.sp, color = Palette.alarm, lineHeight = 18.sp)
+                    }
                 }
             }
+
+            Spacer(Modifier.height(12.dp))
+
+            // ---- 入口：课程页面 / AI 过程（日志已在正文，不再单开入口） ----
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 20.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                Entry("课程页面") { webMode = true }
+                Entry("AI 过程", highlighted = aiLines.isNotEmpty()) { showAiLog = true }
+            }
+            Spacer(Modifier.height(10.dp))
         }
 
-        Spacer(Modifier.height(12.dp))
-
-        // ---- 入口：课程页面 / AI 过程（日志已在正文，不再单开入口） ----
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 20.dp),
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-        ) {
-            Entry("课程页面") { showWeb = true }
-            Entry("AI 过程", highlighted = aiLines.isNotEmpty()) { showAiLog = true }
+        // 可见页面里撞上风控：就地提示，不用再弹一层窗
+        if (webMode && pageVerify) {
+            VerifyBanner(
+                onSynced = { n ->
+                    pageVerify = false
+                    val tip = if (n > 0) "验证凭据已同步（$n 条），可以继续了" else "已标记完成，可以继续了"
+                    Toast.makeText(ctx, tip, Toast.LENGTH_SHORT).show()
+                },
+                cookies = cookies,
+                url = courseUrl,
+            )
+            Spacer(Modifier.height(8.dp))
         }
 
-        Spacer(Modifier.height(10.dp))
-
-        // ---- 正文：本课日志（最新在上） ----
-        Column(
+        // ---- 正文：日志 / 网页（同一个位置，只切可见性） ----
+        Box(
             modifier = Modifier
                 .fillMaxWidth()
                 .weight(1f)
-                .padding(horizontal = 20.dp)
-                .clip(RoundedCornerShape(12.dp))
-                .background(Palette.card)
-                .padding(14.dp),
+                .padding(horizontal = if (webMode) 0.dp else 20.dp)
+                .clip(if (webMode) RoundedCornerShape(0.dp) else RoundedCornerShape(12.dp))
+                .background(Palette.card),
         ) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Text(
-                    text = "运行日志",
-                    fontSize = 12.sp,
-                    fontWeight = FontWeight.Medium,
-                    color = Palette.sub,
-                )
-                Text(
-                    text = if (log.isEmpty()) "" else " · ${log.size} 条",
-                    fontSize = 10.sp,
-                    color = Palette.weak,
-                )
-                Spacer(Modifier.weight(1f))
-                if (log.isNotEmpty()) {
-                    Text("最新在上", fontSize = 10.sp, color = Palette.weak)
-                }
-            }
-            Spacer(Modifier.height(6.dp))
-            if (log.isEmpty()) {
-                Text(
-                    text = "这门课还没有运行记录。点「开始刷课」后会逐条出现任务点的处理结果。\n" +
-                        "想看课程页的实际播放情况，点上面的「课程页面」。",
-                    fontSize = 12.sp,
-                    color = Palette.weak,
-                    lineHeight = 18.sp,
-                )
-            } else {
-                LazyColumn(
-                    modifier = Modifier.fillMaxSize(),
-                    verticalArrangement = Arrangement.spacedBy(2.dp),
-                ) {
-                    items(log) { line ->
+            if (!webMode) {
+                Column(Modifier.fillMaxSize().padding(14.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
                         Text(
-                            text = line,
+                            text = "运行日志",
                             fontSize = 12.sp,
-                            color = when {
-                                line.startsWith("✗") -> Palette.alarm
-                                line.startsWith("✓") -> Palette.ok
-                                line.startsWith("▶") -> Palette.brand
-                                else -> Palette.sub
-                            },
+                            fontWeight = FontWeight.Medium,
+                            color = Palette.sub,
+                        )
+                        Text(
+                            text = if (log.isEmpty()) "" else " · ${log.size} 条",
+                            fontSize = 10.sp,
+                            color = Palette.weak,
+                        )
+                        Spacer(Modifier.weight(1f))
+                        if (log.isNotEmpty()) {
+                            Text("最新在上", fontSize = 10.sp, color = Palette.weak)
+                        }
+                    }
+                    Spacer(Modifier.height(6.dp))
+                    if (log.isEmpty()) {
+                        Text(
+                            text = "这门课还没有运行记录。点「开始刷课」后会逐条出现任务点的处理结果。\n" +
+                                "想看课程页的实际播放情况，点上面的「课程页面」。",
+                            fontSize = 12.sp,
+                            color = Palette.weak,
                             lineHeight = 18.sp,
                         )
+                    } else {
+                        LazyColumn(
+                            modifier = Modifier.fillMaxSize(),
+                            verticalArrangement = Arrangement.spacedBy(2.dp),
+                        ) {
+                            items(log) { line ->
+                                Text(
+                                    text = line,
+                                    fontSize = 12.sp,
+                                    color = when {
+                                        line.startsWith("✗") -> Palette.alarm
+                                        line.startsWith("✓") -> Palette.ok
+                                        line.startsWith("▶") -> Palette.brand
+                                        else -> Palette.sub
+                                    },
+                                    lineHeight = 18.sp,
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+
+            /*
+             * 这个 AndroidView **永远在组合里**，只切可见性。
+             * 一旦让它随模式进出组合，WebView 就会被销毁重建 —— 页面白加载一次，
+             * 而且重新挂到新父容器上之后触摸容易失效（"点不动"就是这么来的）。
+             */
+            AndroidView(
+                modifier = Modifier.fillMaxSize(),
+                factory = { webView },
+                update = { it.visibility = if (webMode) View.VISIBLE else View.GONE },
+            )
+
+            if (webMode) {
+                webError?.let { reason ->
+                    Column(
+                        modifier = Modifier
+                            .align(Alignment.Center)
+                            .padding(horizontal = 24.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                    ) {
+                        Text("页面没打开", fontSize = 14.sp, color = Palette.ink)
+                        Spacer(Modifier.height(6.dp))
+                        Text(reason, fontSize = 11.sp, color = Palette.sub, lineHeight = 17.sp)
                     }
                 }
             }
         }
 
         Spacer(Modifier.height(12.dp))
-    }
-
-    // ---------------- 课程页面（Dialog：没有下滑关闭手势，不跟网页滚动抢手势） ----------------
-    if (showWeb) {
-        Dialog(
-            onDismissRequest = { showWeb = false },
-            properties = DialogProperties(usePlatformDefaultWidth = false),
-        ) {
-            Box(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .systemBarsPadding()
-                    .padding(horizontal = 10.dp, vertical = 24.dp),
-            ) {
-                Column(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .clip(RoundedCornerShape(14.dp))
-                        .background(Palette.card),
-                ) {
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(start = 14.dp, end = 6.dp, top = 8.dp, bottom = 4.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        Text(
-                            text = "课程页面",
-                            fontSize = 14.sp,
-                            fontWeight = FontWeight.Medium,
-                            color = Palette.ink,
-                        )
-                        Spacer(Modifier.weight(1f))
-                        TinyAction("刷新") {
-                            webError = null
-                            webView.reload()
-                        }
-                        TinyAction("关闭") { showWeb = false }
-                    }
-                    Box(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .weight(1f)
-                            .background(Palette.bg),
-                    ) {
-                        AndroidView(
-                            modifier = Modifier.fillMaxSize(),
-                            factory = {
-                                // 反复开关会把它挂到不同父容器上，先摘掉旧父级，
-                                // 否则会抛 "already has a parent"
-                                (webView.parent as? ViewGroup)?.removeView(webView)
-                                webView
-                            },
-                        )
-                        webError?.let { reason ->
-                            Column(
-                                modifier = Modifier
-                                    .align(Alignment.Center)
-                                    .padding(horizontal = 24.dp),
-                                horizontalAlignment = Alignment.CenterHorizontally,
-                            ) {
-                                Text("页面没打开", fontSize = 14.sp, color = Palette.ink)
-                                Spacer(Modifier.height(6.dp))
-                                Text(reason, fontSize = 11.sp, color = Palette.sub, lineHeight = 17.sp)
-                            }
-                        }
-                    }
-                    Text(
-                        text = "这是你自己会话下的课程页，只用于查看，不参与上报；上报仍走后台请求，两者互不影响。",
-                        fontSize = 10.sp,
-                        color = Palette.weak,
-                        lineHeight = 15.sp,
-                        modifier = Modifier.padding(horizontal = 14.dp, vertical = 8.dp),
-                    )
-                }
-            }
-        }
     }
 
     // ---------------- AI 过程 ----------------
@@ -530,6 +564,59 @@ fun StudyScreen(
         )
     }
 }
+
+/**
+ * 可见页面里的风控提示条。
+ *
+ * 为什么不直接弹 [com.xxt.study.feature.verify.VerifyDialog]：用户已经站在验证页上了，
+ * 再盖一层弹窗纯属多余。这里只需要一个"验证完了点我"的入口，负责把 Cookie 导回 OkHttp。
+ */
+@Composable
+private fun VerifyBanner(
+    cookies: CookieStore,
+    url: String,
+    onSynced: (Int) -> Unit,
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 20.dp)
+            .clip(RoundedCornerShape(10.dp))
+            .background(Palette.alarmSoft)
+            .padding(horizontal = 12.dp, vertical = 10.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Column(Modifier.weight(1f)) {
+            Text(
+                text = "页面要求验证码",
+                fontSize = 12.sp,
+                fontWeight = FontWeight.Medium,
+                color = Palette.alarm,
+            )
+            Text(
+                text = "在上面的页面里完成验证后点右边，凭据会同步过来",
+                fontSize = 10.sp,
+                color = Palette.sub,
+                lineHeight = 15.sp,
+            )
+        }
+        Box(
+            modifier = Modifier
+                .clip(RoundedCornerShape(9.dp))
+                .background(Palette.brand)
+                .clickable { onSynced(VerifyGate.finish(cookies, url)) }
+                .padding(horizontal = 12.dp, vertical = 8.dp),
+        ) {
+            Text("已完成验证", fontSize = 12.sp, color = Palette.card)
+        }
+    }
+}
+
+/** 页面内风控探测：命中返回 '1' */
+private const val VERIFY_PROBE =
+    "(function(){var t=(document.body?document.body.innerText:'').slice(0,4000);" +
+        "return /请(?:输入|填写).{0,8}验证码|拖动.{0,6}滑块|滑动验证|人机验证|安全验证|完成验证/i" +
+        ".test(t)?'1':'0';})()"
 
 /** 小窗入口按钮 */
 @Composable

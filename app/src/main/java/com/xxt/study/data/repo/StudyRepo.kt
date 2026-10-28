@@ -1,6 +1,7 @@
 package com.xxt.study.data.repo
 
 import com.xxt.study.core.net.CookieStore
+import com.xxt.study.core.net.VerifyGate
 import com.xxt.study.core.result.Cx
 import com.xxt.study.data.local.SnapshotCache
 import com.xxt.study.data.remote.chaoxing.ChaoxingClient
@@ -60,6 +61,9 @@ class StudyRepo(
         force: Boolean = false,
         onProgress: (Int, Int) -> Unit = { _, _ -> },
     ): Cx<Snapshot> {
+        // 冷却期内不碰服务端：连 checkSession 都不发，免得把计数越推越高
+        VerifyGate.cooldownText()?.let { return Cx.Fail(Cx.Kind.VERIFY, it) }
+
         val session = when (val s = client.checkSession()) {
             is Cx.Ok -> s.data
             is Cx.NeedLogin -> return Cx.NeedLogin

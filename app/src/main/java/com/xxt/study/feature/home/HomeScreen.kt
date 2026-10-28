@@ -8,7 +8,9 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.foundation.background
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -68,7 +70,13 @@ fun HomeScreen(
         // 右上角只留刷新：设置和退出都归「我的」，两个入口并存只会让人犹豫点哪个
         HomeHeader(
             refreshing = state.loading,
-            onRefresh = { vm.refresh(force = true) },
+            // 默认增量：12 分钟内取过的课直接复用，不再把 41 门课全重拉一遍。
+            // 全量重扫改成**长按**——那是重活，也是风控的主要来源，不该是随手一点就发生的事。
+            onRefresh = { vm.refresh() },
+            onFullRefresh = {
+                Toast.makeText(context, "全量重扫（忽略缓存）", Toast.LENGTH_SHORT).show()
+                vm.refresh(force = true)
+            },
         )
 
         val snapshot = state.snapshot
@@ -212,6 +220,7 @@ fun HomeScreen(
 private fun HomeHeader(
     refreshing: Boolean,
     onRefresh: () -> Unit,
+    onFullRefresh: () -> Unit,
 ) {
     Row(
         modifier = Modifier
@@ -223,22 +232,34 @@ private fun HomeHeader(
             Text("学习通", fontSize = 20.sp, fontWeight = FontWeight.Medium, color = Palette.ink)
             Text("作业助手", fontSize = 12.sp, color = Palette.weak)
         }
-        IconAction(Icons24.Refresh, if (refreshing) "刷新中" else "刷新", enabled = !refreshing, onClick = onRefresh)
+        IconAction(
+            icon = Icons24.Refresh,
+            label = if (refreshing) "刷新中" else "刷新（长按全量重扫）",
+            enabled = !refreshing,
+            onClick = onRefresh,
+            onLongClick = onFullRefresh,
+        )
     }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun IconAction(
     icon: ImageVector,
     label: String,
     enabled: Boolean = true,
     onClick: () -> Unit,
+    onLongClick: (() -> Unit)? = null,
 ) {
     Box(
         modifier = Modifier
             .size(40.dp)
             .clip(RoundedCornerShape(10.dp))
-            .clickable(enabled = enabled, onClick = onClick),
+            .combinedClickable(
+                enabled = enabled,
+                onClick = onClick,
+                onLongClick = onLongClick,
+            ),
         contentAlignment = Alignment.Center,
     ) {
         Icon(
