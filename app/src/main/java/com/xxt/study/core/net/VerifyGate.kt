@@ -58,8 +58,32 @@ object VerifyGate {
     fun request(url: String): Boolean {
         startCooldown()
         if (_pending.value != null) return false
-        _pending.value = url.ifBlank { FALLBACK_URL }
+        _pending.value = pageUrlOf(url)
         return true
+    }
+
+    /**
+     * 只放"能当网页打开"的地址进去。
+     *
+     * 触发的往往是一个接口（课程列表 `backclazzdata?view=json`、视频上报 `multimedia/log`…），
+     * 把接口地址丢进 WebView 只会得到一片白——真发生过：冷启动刷新误判后弹窗全白。
+     * 认不出是页面的一律换成学习通首页，用户在首页一样能完成验证。
+     */
+    private fun pageUrlOf(raw: String): String {
+        val u = raw.trim()
+        if (u.isEmpty()) return FALLBACK_URL
+        if (!u.startsWith("http://", ignoreCase = true) && !u.startsWith("https://", ignoreCase = true)) {
+            return FALLBACK_URL
+        }
+        val lower = u.lowercase()
+        val apiLike = lower.contains("/api/") ||
+            lower.contains("api=1") ||
+            lower.contains("view=json") ||
+            lower.contains("courselistdata") ||
+            lower.contains("multimedia/log") ||
+            lower.contains("knowledge/cards") ||
+            lower.contains(".json")
+        return if (apiLike) FALLBACK_URL else u
     }
 
     /** 用户在验证窗口里点了关闭/取消：不重试，保留原来的失败提示。冷却继续生效 */

@@ -61,9 +61,29 @@ object Parsers {
      * 关键词都取"只会在验证页出现"的整句，不用单独的"验证码"——
      * 登录页有"验证码登录"，误判会把用户莫名其妙拦在验证窗口里。
      */
-    fun looksLikeVerify(html: String): Boolean {
-        if (html.isBlank()) return false
-        return VERIFY_RE.containsMatchIn(html.take(30_000))
+    fun looksLikeVerify(body: String): Boolean {
+        val raw = body.trimStart()
+        if (raw.isEmpty()) return false
+
+        /*
+         * 接口返回的 JSON **不是页面**，不能在这上面判断风控。
+         *
+         * 踩过一次：课程列表接口（backclazzdata?view=json）的 JSON 里带 captcha 字段
+         * （只是说明"这次请求要不要验证码"），被旧词表命中后误判成"整个账号被风控"，
+         * 于是冷启动刚刷新就弹出验证窗口；而窗口加载的是这个 JSON 地址，自然是一片白。
+         */
+        if (raw.startsWith("{") || raw.startsWith("[")) return false
+
+        /*
+         * 只看**可见文字**，不看原始 HTML。
+         *
+         * 原始 HTML 里满是脚本地址和属性，`captcha.js`、`data-captcha` 这类字样到处都是，
+         * 按原文匹配必然误伤。Jsoup 的 text() 只收 TextNode，天然排除 script/style 和属性。
+         */
+        val visible = runCatching { Jsoup.parse(body.take(200_000)).text() }
+            .getOrNull()
+            ?: body.take(8_000)
+        return VERIFY_RE.containsMatchIn(visible.take(4_000))
     }
 
     /**
@@ -92,6 +112,9 @@ object Parsers {
      * 同时避开误伤：登录页有「验证码登录」，课程页可能有「验证码技术」，
      * 这些都不带"请输入/请填写"前缀，不会命中。
      *
+     * 刻意**不收单独的 `captcha`**：它在 HTML 的脚本地址、接口字段里到处都是，
+     * 收进来就会把正常页面判成风控页（真发生过，见 [looksLikeVerify] 的注释）。
+     *
      * ⚠️ 改这里要同步改 `ScanProbes.VERIFY_CHECK`（那个跑在 WebView 里）。
      */
     private val VERIFY_RE = Regex(
@@ -99,11 +122,9 @@ object Parsers {
             "|拖动.{0,6}滑块" +
             "|滑动验证" +
             "|人机验证" +
-            "|安全验证" +
-            "|完成验证" +
-            "|验证码(?:错误|不正确|已失效|已过期)" +
-            "|captcha",
-        RegexOption.IGNORE_CASE,
+            // 泛词必须带"请"：课程章节名里出现「安全验证技术」「完成验证流程」是完全正常的
+            "|请.{0,4}(?:安全验证|完成验证)" +
+            "|验证码(?:错误|不正确|已失效|已过期)",
     )
 
     private val FAIL_WORDS = listOf(

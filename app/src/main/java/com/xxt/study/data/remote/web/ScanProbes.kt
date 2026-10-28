@@ -71,8 +71,9 @@ internal object ScanProbes {
      */
     private const val VERIFY_CHECK =
         "  var __v=(document.body?document.body.innerText:'').slice(0,4000);\n" +
-            "  if(/请(?:输入|填写).{0,8}验证码|拖动.{0,6}滑块|滑动验证|人机验证|安全验证|完成验证" +
-            "|验证码(?:错误|不正确|已失效|已过期)/i.test(__v)) return 'VERIFY|'+h;\n"
+            "  if(/请(?:输入|填写).{0,8}验证码|拖动.{0,8}滑块|滑动验证|人机验证" +
+            "|请.{0,4}(?:安全验证|完成验证)|验证码(?:错误|不正确|已失效|已过期)/i.test(__v))" +
+            " return 'VERIFY|'+h;\n"
 
     /**
      * 课程中间页。

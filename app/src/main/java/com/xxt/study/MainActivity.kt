@@ -31,7 +31,7 @@ import com.xxt.study.feature.login.LoginScreen
 import com.xxt.study.feature.mine.GuideScreen
 import com.xxt.study.feature.settings.SettingsScreen
 import com.xxt.study.feature.study.StudyScreen
-import com.xxt.study.feature.verify.VerifyDialog
+import com.xxt.study.feature.verify.VerifyScreen
 import com.xxt.study.feature.work.WorkAnswerScreen
 import com.xxt.study.feature.work.WorkListScreen
 
@@ -100,12 +100,23 @@ class MainActivity : ComponentActivity() {
                     }
                 }
 
+                // 需要人工验证时整页替换。不用 Dialog：WebView 放进 Dialog 窗口会渲染成白屏
+                // （刷课页的课程页踩过同一个坑），而验证本身是阻塞态，整页也说得通。
+                val verifyUrl by VerifyGate.pending.collectAsStateWithLifecycle()
+
                 Box(
                     modifier = Modifier
                         .fillMaxSize()
                         .background(Palette.bg),
                 ) {
                     when {
+                        verifyUrl != null -> VerifyScreen(
+                            url = verifyUrl!!,
+                            cookies = container.cookies,
+                            onPassed = { VerifyGate.markPassed() },
+                            onCancel = { VerifyGate.cancel() },
+                        )
+
                         !loggedIn -> LoginScreen(onLoggedIn = { loggedIn = true })
 
                         showGuide -> GuideScreen(onBack = { showGuide = false })
@@ -154,23 +165,6 @@ class MainActivity : ComponentActivity() {
                             onOpenGuide = { showGuide = true },
                         )
                     }
-                }
-
-                /*
-                 * 人工验证浮层：全局一层，不区分当前在哪一页。
-                 *
-                 * 风控可能在任何请求上触发（扫描、刷课、读作业），而验证只有一个办法——
-                 * 让用户在学习通原版页面上点一下。所以它必须凌驾于所有页面之上，
-                 * 而不是塞进某个业务页面里。
-                 */
-                val verifyUrl by VerifyGate.pending.collectAsStateWithLifecycle()
-                verifyUrl?.let { url ->
-                    VerifyDialog(
-                        url = url,
-                        cookies = container.cookies,
-                        onPassed = { VerifyGate.markPassed() },
-                        onCancel = { VerifyGate.cancel() },
-                    )
                 }
             }
         }

@@ -42,11 +42,10 @@ android {
         applicationId = "com.xxt.study"
         minSdk = 26
         targetSdk = 37
-        // 0.5.1：课程页移出 Dialog 修"点不动"、验证码识别放宽（请输入图片中的验证码）、
-        //        刷新默认增量（长按全量）、并发降为 1、触发风控后 5 分钟冷却
+        // 0.5.2：修误判（JSON 字段/脚本地址里的 captcha 不再算风控）+ 验证页改整页渲染（不再白屏）
         // versionCode 每次发布必须递增，否则覆盖安装会被拒
-        versionCode = 14
-        versionName = "0.5.1"
+        versionCode = 15
+        versionName = "0.5.2"
     }
 
     buildTypes {

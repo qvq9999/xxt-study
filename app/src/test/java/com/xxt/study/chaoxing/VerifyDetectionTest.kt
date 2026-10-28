@@ -32,12 +32,36 @@ class VerifyDetectionTest {
             "请填写验证码后继续",
             "拖动下方滑块完成验证",
             "请完成人机验证",
-            "安全验证",
+            "请完成安全验证",
             "验证码已失效，请重新获取",
-            "captcha",
         ).forEach {
             assertTrue("没识别出来：$it", Parsers.looksLikeVerify("<p>$it</p>"))
         }
+    }
+
+    @Test
+    fun `接口 JSON 里出现 captcha 字段不算风控`() {
+        // 课程列表接口 backclazzdata?view=json 就带这类字段，只是说明"这次要不要验证码"，
+        // 拿它判定"整个账号被风控"会让冷启动刚刷新就弹验证窗口（且弹窗打开的是 JSON 地址→白屏）
+        assertFalse(
+            Parsers.looksLikeVerify("""{"result":1,"needCaptcha":true,"captcha":"abc","channelList":[]}"""),
+        )
+    }
+
+    @Test
+    fun `HTML 里的脚本地址不算风控`() {
+        assertFalse(
+            "属性/脚本里的 captcha 不能算可见文案",
+            Parsers.looksLikeVerify(
+                """<html><head><script src="https://cdn.chaoxing.com/js/captcha.js"></script></head>""" +
+                    "<body><div>我的课程</div></body></html>",
+            ),
+        )
+    }
+
+    @Test
+    fun `可见文字里的真实文案算风控`() {
+        assertTrue(Parsers.looksLikeVerify("<div><p>操作异常，请输入图片中的验证码</p></div>"))
     }
 
     @Test
@@ -46,6 +70,8 @@ class VerifyDetectionTest {
             "验证码登录",
             "验证码技术",
             "本节课讲解图形验证码的原理",
+            "安全验证技术",
+            "完成验证流程后提交",
             "",
         ).forEach {
             assertFalse("不该误判：$it", Parsers.looksLikeVerify(it))
