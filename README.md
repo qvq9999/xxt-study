@@ -330,7 +330,7 @@ https://ghfast.top/<原始 GitHub 地址>       ← 2026-10-28 实测 000（连�
   "sha256": "<apk 的 sha256>",
   "notes": ["作业状态修正", "内置更新", "升级清一次缓存"],
   "packageName": "com.xxt.study",
-  "url": "https://github.com/<owner>/<repo>/releases/download/v0.6.0/app-release.apk"
+  "url": "https://github.com/qvq9999/xxt-study/releases/download/v0.6.0/app-release.apk"
 }
 ```
 
@@ -370,11 +370,34 @@ https://ghfast.top/<原始 GitHub 地址>       ← 2026-10-28 实测 000（连�
 ```bash
 "/e/gradle98/bin/gradle.bat" :app:assembleRelease
 node tools/release-update.mjs "作业状态修正" "内置更新" "升级清一次缓存"
-git add update/latest.json && git commit -m "release: v0.6.0" && git push
+git add update/latest.json && git commit -m "release: v0.6.1" && git push
 ```
 
 脚本从 `app/build.gradle.kts` 读版本号（唯一来源，不手抄）、算 size/sha256、写 `update/latest.json`，
-有 `gh` CLI 就顺手建 Release 并传包。**不自动 commit**——发版是要人确认的事。
+然后建 Release 并传 APK：
+
+- 装了 `gh` CLI → 用 `gh release create`
+- 没装 → 走 GitHub REST API（凭据从 `git credential fill` 取，和 push 同一份，不额外要 token）
+
+**不自动 commit / push**——发版是要人确认的事。同名 Release 已存在时脚本直接拒绝，不会覆盖上传
+（两个同名 asset 会让人不知道装哪个，比失败更糟）。
+
+### 端到端验证（2026-10-28 实测，仓库 `qvq9999/xxt-study`）
+
+不只是"能编译"，是真的走了一遍：
+
+| 环节 | 结果 |
+|---|---|
+| `update/latest.json` 经 ghproxy.net | **200**，335 字节，JSON 正确 |
+| `update/latest.json` 经 gh-proxy.com | **200** |
+| `update/latest.json` 直连 raw.githubusercontent.com | **000**（不通，所以镜像优先是对的） |
+| ghfast.top | **000**（已排到最后） |
+| APK 经 ghproxy.net 下载 | **200**，2,503,004 字节，**sha256 与清单完全一致** |
+| APK 经 gh-proxy.com 下载 | **200**，同上 |
+
+> 仓库必须是 **public**：raw 地址要匿名可读，镜像站也只能代理公开资源。
+> 也正因为公开，`.workbuddy/`（含真实课程名的排查笔记）已从**全部历史**里清除，
+> 不只是当前版本——`git log -- .workbuddy` 现在为空。
 
 ---
 

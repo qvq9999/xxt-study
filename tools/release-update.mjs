@@ -21,7 +21,8 @@
 
 import { createHash } from 'node:crypto'
 import { execFileSync } from 'node:child_process'
-import { readFileSync, writeFileSync, statSync, existsSync, mkdirSync } from 'node:fs'
+import { readFileSync, writeFileSync, statSync, existsSync, mkdirSync, unlinkSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -119,8 +120,98 @@ if (skipRelease) {
     console.error(`✗ Release 创建失败（可能同名 tag 已存在），latest.json 已经写好，可重试上传`)
   }
 } else {
-  console.log('\n（没装 gh CLI，跳过 Release 创建）手动执行：')
-  console.log(`  gh release create ${tag} "${apkPath}" --repo ${repo} --title ${tag} --notes "- ${notes.join('\\n- ')}"`)
+  // 本机没装 gh CLI。之前这里只打一行"手动执行"，等于每次发版都要人肉贴命令，
+  // 所以改成直接走 GitHub API —— 凭据仍然从 git 自己存的那份取，不额外要 token。
+  console.log(`\n（没装 gh CLI，改用 GitHub API 发版）正在创建 Release ${tag} …`)
+  await publishViaApi()
+}
+
+/**
+ * 用 GitHub REST API 建 Release 并上传 APK。
+ *
+ * 凭据来源：`git credential fill`——和 push 用的是同一份，
+ * 不引入新的 token 文件，也不会在命令行/日志里出现（走 curl 配置文件的 header）。
+ */
+async function publishViaApi() {
+  const cred = execFileSync('git', ['credential', 'fill'], {
+    input: 'protocol=https\nhost=github.com\n\n',
+    encoding: 'utf8',
+  })
+  const token = cred.split('\n').find((l) => l.startsWith('password='))?.slice(9)?.trim()
+  if (!token) {
+    console.error('✗ 取不到 GitHub 凭据（git credential fill 没返回 token），请先 push 一次让凭据管理器记住')
+    return
+  }
+
+  // Windows 版 curl 是 schannel 后端，走代理时会卡在证书吊销检查上；Linux 没有这个参数
+  const sslArgs = process.platform === 'win32' ? ['--ssl-no-revoke'] : []
+
+  // token 放临时配置文件而不是命令行参数：`-H "Authorization: ..."` 会出现在进程列表里
+  const cfg = join(tmpdir(), `gh-api-${process.pid}.cfg`)
+  writeFileSync(cfg, `header = "Authorization: Bearer ${token}"\nheader = "Accept: application/vnd.github+json"\n`, {
+    mode: 0o600,
+  })
+
+  const call = (args, opts = {}) =>
+    execFileSync('curl', ['-s', '-K', cfg, ...sslArgs, ...args], {
+      encoding: 'utf8',
+      maxBuffer: 32 * 1024 * 1024,
+      ...opts,
+    })
+
+  try {
+    // 已存在同名 Release 时直接拒绝：覆盖上传会留下两个同名 asset，
+    // 用户装哪个都不确定，比失败更糟
+    const existing = call([`https://api.github.com/repos/${repo}/releases/tags/${tag}`])
+    try {
+      const parsed = JSON.parse(existing)
+      if (parsed.id) {
+        console.error(`✗ Release ${tag} 已存在（id=${parsed.id}）。要重发请先在网页上删掉它，或换版本号`)
+        return
+      }
+    } catch {
+      // 解析失败 = 404 的 {"message":"Not Found"}，正常，继续建
+    }
+
+    const created = call([
+      '-X', 'POST',
+      `https://api.github.com/repos/${repo}/releases`,
+      '-d', JSON.stringify({
+        tag_name: tag,
+        name: tag,
+        // 发布页同样用简写：和弹窗同一份文案
+        body: notes.map((n) => `- ${n}`).join('\n'),
+        draft: false,
+        prerelease: false,
+      }),
+    ])
+    const rel = JSON.parse(created)
+    if (!rel.id) {
+      console.error(`✗ 建 Release 失败：${rel.message ?? created.slice(0, 200)}`)
+      return
+    }
+
+    console.log(`  Release id=${rel.id}，上传 APK …`)
+    const uploaded = call([
+      '-X', 'POST',
+      '-H', 'Content-Type: application/vnd.android.package-archive',
+      '--data-binary', `@${apkPath}`,
+      `https://uploads.github.com/repos/${repo}/releases/${rel.id}/assets?name=app-release.apk`,
+    ])
+    const asset = JSON.parse(uploaded)
+    if (asset.id) {
+      console.log(`✓ Release ${tag} 已发布，资产 ${asset.name}（${asset.size} 字节）`)
+      console.log(`  ${asset.browser_download_url}`)
+    } else {
+      console.error(`✗ 上传失败：${asset.message ?? uploaded.slice(0, 200)}`)
+    }
+  } finally {
+    try {
+      unlinkSync(cfg)
+    } catch {
+      /* 临时文件删不掉不影响结果 */
+    }
+  }
 }
 
 console.log('\n接下来记得把清单提交上去（App 靠它判断有没有新版）：')
