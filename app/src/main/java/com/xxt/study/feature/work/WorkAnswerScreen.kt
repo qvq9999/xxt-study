@@ -3,6 +3,7 @@ package com.xxt.study.feature.work
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.activity.compose.BackHandler
 import android.webkit.ConsoleMessage
 import android.webkit.WebViewClient
@@ -67,6 +68,7 @@ import com.xxt.study.domain.QType
 import com.xxt.study.domain.Question
 import com.xxt.study.domain.Work
 import com.xxt.study.feature.ai.AiSwitchSheet
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.serialization.json.Json
@@ -86,6 +88,9 @@ private const val REWRITE_TRIES = 2
 /** 页面里注入的"提交成功"信号前缀，见 [SUBMIT_WATCH] 与 WebChromeClient.onConsoleMessage */
 private const val TAG_SUBMITTED = "XXT_SUBMITTED"
 
+/** 页面滚动位置变化的信号前缀（带 0/1） */
+private const val TAG_SCROLL = "XXT_SCROLL:"
+
 /**
  * 提交成功探测器（注入到学习通作答页里跑）。
  *
@@ -93,28 +98,117 @@ private const val TAG_SUBMITTED = "XXT_SUBMITTED"
  * 学习通提交是 AJAX 局部刷新，页面不跳转，只把成功提示插进 DOM。
  * 只查一次会在提示出现之前就放弃；监听 DOM 变化才能第一时间抓住。
  *
- * 命中后主动滚回顶部——提交按钮在页面最下方，而成功提示和得分在最上方，
- * 不滚上去用户根本看不到（这就是"提交成功后显示太靠上看不全"）。
+ * 三路兜底（少一路就会出现"提交了但 App 不知道"）：
+ * 1. MutationObserver —— 正常路径，插节点/改文字都能抓到；
+ * 2. 1.2 秒轮询 —— 有些写法（改属性、iframe 内部渲染）不产生我们监听的变化；
+ * 3. 劫持 alert / confirm —— **这一路是必须的**：学习通部分版本提交完直接
+ *    `alert('提交成功')`，而 alert 是同步阻塞的，JS 线程被卡住，
+ *    MutationObserver 的回调根本轮不到执行——只有从 alert 入口才能提前发信号。
  */
 private const val SUBMIT_WATCH = """
 (function(){
   if (window.__xxtSubmitWatch) return;
   window.__xxtSubmitWatch = true;
-  var re = /提交成功|作业已提交|已成功提交|提交完毕|已完成提交|已提交本次作业/;
+
+  var re = /提交成功|已提交成功|作业已提交|已成功提交|提交完毕|已完成提交|已提交本次作业|交卷成功|提交作业成功|您已提交/;
+
+  function fire(tag){
+    if (window.__xxtFired) return;
+    window.__xxtFired = true;
+    try { console.log('XXT_SUBMITTED:' + (tag || '')); } catch(e) {}
+  }
+
   function check(){
     if (window.__xxtFired) return;
     var t = document.body ? document.body.innerText : '';
-    if (re.test(t)) {
-      window.__xxtFired = true;
-      try { console.log('XXT_SUBMITTED'); } catch(e) {}
-    }
+    if (t && re.test(t)) fire('text');
   }
+
   try {
     new MutationObserver(check).observe(document.body, {
       childList: true, subtree: true, characterData: true
     });
   } catch(e) {}
+
+  try {
+    var rawAlert = window.alert;
+    window.alert = function(msg){
+      try { if (re.test(String(msg || ''))) fire('alert'); } catch(e) {}
+      return rawAlert.apply(window, arguments);
+    };
+  } catch(e) {}
+
+  try {
+    var rawConfirm = window.confirm;
+    window.confirm = function(msg){
+      try { if (re.test(String(msg || ''))) fire('confirm'); } catch(e) {}
+      return rawConfirm.apply(window, arguments);
+    };
+  } catch(e) {}
+
+  try { setInterval(check, 1200); } catch(e) {}
+
   check();
+})()
+"""
+
+/**
+ * 把页面滚回最顶端。
+ *
+ * 为什么不能只写 `window.scrollTo(0,0)`：
+ * 学习通作答页把内容放在一个内部滚动容器里（外层 window 根本不动），
+ * 对它调 scrollTo 等于什么都没做——这正是"提交成功了但看不到提示"的原因。
+ * 所以这里逐层清零：window → documentElement → body → 所有子滚动容器。
+ *
+ * 不用 `behavior:'smooth'`：提交后要的是**立刻**看到结果，动画那一秒纯属添乱。
+ */
+private const val SCROLL_TOP = """
+(function(){
+  function zero(el){
+    try { if (el && el.scrollTop) el.scrollTop = 0; } catch(e) {}
+  }
+  try { window.scrollTo(0, 0); } catch(e) {}
+  zero(document.documentElement);
+  zero(document.body);
+  try {
+    var all = document.querySelectorAll('div,section,main,article,td,ul,ol');
+    for (var i = 0; i < all.length; i++) {
+      var el = all[i];
+      if (el.scrollTop > 0 && el.scrollHeight - el.clientHeight > 8) el.scrollTop = 0;
+    }
+  } catch(e) {}
+})()
+"""
+
+/**
+ * 上报"页面是否已经往下滚了"，用来决定要不要显示回到顶部的浮动按钮。
+ *
+ * scroll 事件不冒泡，所以必须 capture=true 才能拿到内部容器的滚动。
+ * 只上报"跨过阈值"的变化，中间过程一律吞掉，避免每帧刷一次日志。
+ */
+private const val SCROLL_REPORT = """
+(function(){
+  if (window.__xxtScrollReport) return;
+  window.__xxtScrollReport = true;
+  var last = -1, timer = null;
+  function offset(){
+    var a = window.pageYOffset || 0;
+    var d = (document.documentElement && document.documentElement.scrollTop) || 0;
+    var b = (document.body && document.body.scrollTop) || 0;
+    return Math.max(a, d, b);
+  }
+  function report(){
+    var v = offset();
+    var down = v > 240 ? 1 : (v < 80 ? 0 : -1);
+    if (down === -1 || down === last) return;
+    last = down;
+    try { console.log('XXT_SCROLL:' + down); } catch(e) {}
+  }
+  window.addEventListener('scroll', function(){
+    if (timer) return;
+    timer = setTimeout(function(){ timer = null; report(); }, 400);
+  }, true);
+  report();
 })()
 """
 
@@ -149,6 +243,9 @@ fun WorkAnswerScreen(
      * 顶部明确告诉他已经提交了。
      */
     var submitted by remember { mutableStateOf(false) }
+
+    /** 页面是否已经往下滚过一段（决定要不要显示"回到顶部"浮动键） */
+    var pageScrolledDown by remember { mutableStateOf(false) }
 
     // 链接不合法就别去 loadUrl：加载空串只会得到一片白，用户看不出发生了什么
     val urlProblem = remember(work) {
@@ -203,6 +300,29 @@ fun WorkAnswerScreen(
             }
             webView = null
         }
+    }
+
+    /**
+     * 把页面滚回最顶端。
+     *
+     * 为什么要滚三次：提交成功后学习通是**异步**把结果面板插进来的，
+     * 第一次滚的时候页面可能还没长高、没被撑开，滚了个空。
+     * 0 / 400 / 1200 毫秒各来一次，等它插完再补一刀。
+     */
+    fun scrollPageToTop() {
+        val w = webView ?: return
+        listOf(0L, 400L, 1200L).forEach { wait ->
+            scope.launch {
+                if (wait > 0) delay(wait)
+                runCatching { w.evaluateJavascript(SCROLL_TOP, null) }
+            }
+        }
+    }
+
+    /** 检测到提交成功后：置状态 + 把结果顶到视野里 */
+    fun onSubmitted() {
+        if (!submitted) submitted = true
+        scrollPageToTop()
     }
 
     fun runGenerate(fresh: Boolean) {
@@ -491,6 +611,48 @@ fun WorkAnswerScreen(
             }
         }
 
+        /*
+         * 提交成功后的状态条。
+         *
+         * 为什么不只靠"把页面滚到顶部"：滚动是**页面的事**，页面结构一变就可能滚不动，
+         * 而用户必须知道"交上去了"。所以 App 自己也要给一条明确结论，
+         * 并且旁边留一个「回到顶部」——滚不动时他自己点一下也能到。
+         */
+        if (submitted) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp)
+                    .clip(RoundedCornerShape(10.dp))
+                    .background(Palette.okSoft)
+                    .clickable { scrollPageToTop() }
+                    .padding(horizontal = 10.dp, vertical = 7.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Icon(
+                    imageVector = Icons24.Check,
+                    contentDescription = null,
+                    modifier = Modifier.size(14.dp),
+                    tint = Palette.ok,
+                )
+                Text(
+                    text = "作业已提交，结果与得分在页面最上方",
+                    fontSize = 11.sp,
+                    color = Palette.ok,
+                    modifier = Modifier
+                        .weight(1f)
+                        .padding(start = 6.dp),
+                )
+                Text(
+                    text = "回到顶部",
+                    fontSize = 11.sp,
+                    fontWeight = FontWeight.Medium,
+                    color = Palette.brand,
+                )
+            }
+            Spacer(Modifier.height(8.dp))
+        }
+
         Box(
             modifier = Modifier
                 .fillMaxWidth()
@@ -548,6 +710,14 @@ fun WorkAnswerScreen(
                                  * 都在页面最上面。不主动滚上去，用户点完提交抬头什么都看不到。
                                  */
                                 view?.evaluateJavascript(SUBMIT_WATCH, null)
+                                // 顺带上报滚动位置，用来决定要不要显示"回到顶部"浮动键
+                                view?.evaluateJavascript(SCROLL_REPORT, null)
+                                /*
+                                 * 如果这一页是"提交后跳过来的结果页"，页面顶上来就已经有结论了，
+                                 * 但 onPageFinished 时视口可能还停在上一个页面的位置——
+                                 * 这里补一次滚动，别让用户对着中间一段发呆。
+                                 */
+                                if (submitted) scrollPageToTop()
                             }
 
                             override fun onReceivedError(
@@ -608,13 +778,10 @@ fun WorkAnswerScreen(
                              */
                             override fun onConsoleMessage(msg: ConsoleMessage?): Boolean {
                                 val text = msg?.message().orEmpty()
-                                if (text.startsWith(TAG_SUBMITTED)) {
-                                    submitted = true
-                                    // 滚回顶部：提交结果、得分、批阅状态都在页面最上方
-                                    webView?.evaluateJavascript(
-                                        "window.scrollTo({top:0,behavior:'smooth'})",
-                                        null,
-                                    )
+                                when {
+                                    text.startsWith(TAG_SUBMITTED) -> onSubmitted()
+                                    text.startsWith(TAG_SCROLL) ->
+                                        pageScrolledDown = text.removePrefix(TAG_SCROLL).trim() == "1"
                                 }
                                 // 吞掉日志：页面自己的 console 输出对我们没意义
                                 return true
@@ -690,6 +857,33 @@ fun WorkAnswerScreen(
                     }
                 }
             }
+
+            /*
+             * 回到顶部的浮动键。
+             *
+             * 作答页是 PC 版结构，一屏只放得下几道题，用户滚到最底下的提交按钮时
+             * 已经离开页面顶部很远了。提交结果、得分都在顶部——**自动滚动可能失败
+             * （页面把内容放在内部容器里、或者结构一变），但用户自己点一下永远能回去**。
+             */
+            if (pageScrolledDown && failed == null) {
+                Box(
+                    modifier = Modifier
+                        .align(Alignment.BottomEnd)
+                        .padding(end = 14.dp, bottom = 14.dp)
+                        .size(38.dp)
+                        .clip(RoundedCornerShape(19.dp))
+                        .background(Palette.card.copy(alpha = 0.94f))
+                        .clickable { scrollPageToTop() },
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Text(
+                        text = "↑",
+                        fontSize = 17.sp,
+                        fontWeight = FontWeight.Medium,
+                        color = Palette.sub,
+                    )
+                }
+            }
         }
 
         /*
@@ -743,9 +937,17 @@ fun WorkAnswerScreen(
     }
 
     if (sheetOpen) {
+        /*
+         * 直接全高展开，不停在"半屏"那档。
+         *
+         * 半屏时"逐题结果"列表只露出一半，用户划一下才能看到下面的题，
+         * 看起来就像"内容显示不全"。结果窗口一打开就该是一次能看完的状态。
+         */
+        val answerSheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
         ModalBottomSheet(
             onDismissRequest = { sheetOpen = false },
             containerColor = Palette.card,
+            sheetState = answerSheetState,
         ) {
             Column(
                 modifier = Modifier

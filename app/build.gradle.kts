@@ -42,10 +42,10 @@ android {
         applicationId = "com.xxt.study"
         minSdk = 26
         targetSdk = 37
-        // 0.8.0：深色模式（纯黑 OLED）+ 状态栏图标反色 + 作业列表单课刷新 + 优先扫本学期课程
+        // 0.8.1：版本日志改弹窗（「我的」页只留版本号）+ 提交成功后的结果显示修好
         // versionCode 每次发布必须递增，否则覆盖安装会被拒，内置更新也会判成"没有新版"
-        versionCode = 20
-        versionName = "0.8.0"
+        versionCode = 21
+        versionName = "0.8.1"
     }
 
     buildTypes {

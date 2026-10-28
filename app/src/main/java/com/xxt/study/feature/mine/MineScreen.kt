@@ -29,11 +29,11 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.xxt.study.core.ui.Icons24
 import com.xxt.study.core.ui.Palette
-import com.xxt.study.core.update.ChangeEntry
 import com.xxt.study.core.update.Changelog
 import com.xxt.study.core.update.UpdatePhase
 import com.xxt.study.core.update.UpdateUiState
@@ -168,40 +168,17 @@ fun MineScreen(
                 onClick = onUpdateClick,
             )
 
-            /*
-             * 版本日志：默认就摊开最近两版。
-             *
-             * 用户要的是"能直接看到最近改了什么"，如果做成"点进去才显示"，
-             * 等于又藏了一层。两版是折叠状态下的上限，再往下点一下展开全部。
-             */
+            // 版本日志只做入口：内容在弹窗里给足高度，不在「我的」页占半屏
             MineRow(
                 icon = Icons24.Book,
                 title = "版本日志",
-                subtitle = if (logOpen) {
-                    "点击收起"
-                } else {
-                    "当前 v$version · 点击展开全部 ${Changelog.entries.size} 个版本"
-                },
-                onClick = { logOpen = !logOpen },
+                subtitle = "查看最近 ${Changelog.entries.size} 个版本改了什么",
+                onClick = { logOpen = true },
             )
-            Column(
-                modifier = Modifier.padding(start = 16.dp, end = 16.dp, bottom = 12.dp),
-            ) {
-                val shown = if (logOpen) {
-                    Changelog.entries
-                } else {
-                    Changelog.entries.take(Changelog.COLLAPSED_COUNT)
-                }
-                shown.forEach { ChangeLogBlock(it) }
-                if (!logOpen && Changelog.entries.size > Changelog.COLLAPSED_COUNT) {
-                    Text(
-                        text = "还有 ${Changelog.entries.size - Changelog.COLLAPSED_COUNT} 个版本，点上面展开",
-                        fontSize = 10.sp,
-                        color = Palette.weak,
-                        modifier = Modifier.padding(top = 2.dp),
-                    )
-                }
-            }
+        }
+
+        if (logOpen) {
+            ChangelogDialog(version = version, onDismiss = { logOpen = false })
         }
 
         Spacer(Modifier.height(14.dp))
@@ -230,12 +207,15 @@ fun MineScreen(
         }
 
         Spacer(Modifier.height(20.dp))
+        // 底部只留版本号：其余说明文字都是"每次进页面都要看一眼"的噪音
         Text(
-            text = "学习通助手 v$version\n只处理课程任务点与作业答案回填，不碰考试。",
+            text = "学习通助手 v$version",
             fontSize = 11.sp,
             color = Palette.weak,
-            lineHeight = 17.sp,
-            modifier = Modifier.padding(horizontal = 20.dp),
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 20.dp),
+            textAlign = TextAlign.Center,
         )
         Spacer(Modifier.height(24.dp))
         Spacer(Modifier.navigationBarsPadding())
@@ -293,36 +273,6 @@ private fun MineRow(
             modifier = Modifier.size(18.dp),
             tint = if (enabled) Palette.line else Palette.bg,
         )
-    }
-}
-
-/** 一条版本记录：版本号 + 日期 + 几条简写 */
-@Composable
-private fun ChangeLogBlock(entry: ChangeEntry) {
-    Column(modifier = Modifier.padding(bottom = 10.dp)) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Text(
-                text = "v${entry.versionName}",
-                fontSize = 12.sp,
-                fontWeight = FontWeight.Medium,
-                color = Palette.brand,
-            )
-            Text(
-                text = entry.date,
-                fontSize = 10.sp,
-                color = Palette.weak,
-                modifier = Modifier.padding(start = 6.dp),
-            )
-        }
-        entry.notes.forEach { note ->
-            Text(
-                text = "· $note",
-                fontSize = 11.sp,
-                color = Palette.sub,
-                lineHeight = 16.sp,
-                modifier = Modifier.padding(top = 3.dp),
-            )
-        }
     }
 }
 

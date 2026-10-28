@@ -26,6 +26,15 @@ object Changelog {
 
     val entries: List<ChangeEntry> = listOf(
         ChangeEntry(
+            versionName = "0.8.1",
+            date = "10-28",
+            notes = listOf(
+                "版本日志改成弹窗查看",
+                "「我的」页底部只留版本号",
+                "修提交后看不到结果",
+            ),
+        ),
+        ChangeEntry(
             versionName = "0.8.0",
             date = "10-28",
             notes = listOf(
@@ -73,6 +82,11 @@ object Changelog {
         ),
     )
 
-    /** 默认展示几条：两三版足够说明"最近改了什么"，再多就变成长文档了 */
-    const val COLLAPSED_COUNT = 2
+    /**
+     * 一条记录最多留几条要点。
+     *
+     * 弹窗虽然比原来那坨内嵌列表宽裕，但"一次列八条"还是会让人不想看。
+     * 发版脚本已经卡了字数，这里再卡条数，两头都短，日志才有被读完的可能。
+     */
+    const val MAX_NOTES = 6
 }
