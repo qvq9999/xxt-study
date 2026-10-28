@@ -74,13 +74,15 @@ fun VerifyScreen(
     onCancel: () -> Unit,
 ) {
     val ctx = LocalContext.current
-    var loading by remember { mutableStateOf(true) }
-    var blank by remember { mutableStateOf(false) }
-    var pageError by remember { mutableStateOf<String?>(null) }
-    var switchedToHome by remember { mutableStateOf(false) }
-    var importing by remember { mutableStateOf(false) }
+    // 所有状态都跟着 url 走：换了一个验证地址必须从头开始，
+    // 否则会拿着上一页的"已加载完"状态去显示新页面
+    var loading by remember(url) { mutableStateOf(true) }
+    var blank by remember(url) { mutableStateOf(false) }
+    var pageError by remember(url) { mutableStateOf<String?>(null) }
+    var switchedToHome by remember(url) { mutableStateOf(false) }
+    var importing by remember(url) { mutableStateOf(false) }
 
-    val webView = remember {
+    val webView = remember(url) {
         WebView(ctx).apply {
             settings.javaScriptEnabled = true
             settings.domStorageEnabled = true
@@ -152,7 +154,11 @@ fun VerifyScreen(
         }
     }
 
-    DisposableEffect(Unit) {
+    /*
+     * 跟着 webView 走而不是 Unit：url 变了会重建 WebView，旧的那个必须销毁，
+     * 否则每换一次验证地址就漏一个 WebView（各自还带着一份会话）。
+     */
+    DisposableEffect(webView) {
         onDispose {
             runCatching {
                 webView.stopLoading()
@@ -162,15 +168,37 @@ fun VerifyScreen(
         }
     }
 
+    /**
+     * 用户点了「已完成验证，继续」。
+     *
+     * 先问页面一句"你还在等验证码吗"再放行。
+     *
+     * 这是"验证码页无限循环"的第二道防线：用户很可能只点了我们这颗按钮，
+     * 却没在学习通页面上**提交**验证码（输完就等着，以为点这里就等于提交）。
+     * 那样 Cookie 根本没变，一继续必然又被拦，再弹一次同样的页面 —— 死循环。
+     * 与其让他反复试，不如直接告诉他"验证码还没提交"。
+     */
     fun finish() {
+        if (importing) return
         importing = true
-        // 导 Cookie + 标记完成，逻辑统一在 VerifyGate
-        val n = VerifyGate.finish(cookies, url)
-        importing = false
-        if (n > 0) {
-            Toast.makeText(ctx, "验证凭据已同步（$n 条），正在继续", Toast.LENGTH_SHORT).show()
+        webView.evaluateJavascript(STILL_WAITING) { raw ->
+            if (raw?.trim('"') == "PEND") {
+                importing = false
+                Toast.makeText(
+                    ctx,
+                    "验证码还没提交：请先在页面里输入并点「确认/提交」，再点这里",
+                    Toast.LENGTH_LONG,
+                ).show()
+                return@evaluateJavascript
+            }
+            // 导 Cookie + 标记完成，逻辑统一在 VerifyGate
+            val n = VerifyGate.finish(cookies, url)
+            importing = false
+            if (n > 0) {
+                Toast.makeText(ctx, "验证凭据已同步（$n 条），正在继续", Toast.LENGTH_SHORT).show()
+            }
+            onPassed()
         }
-        onPassed()
     }
 
     Column(
@@ -318,3 +346,29 @@ private const val VERIFY_OR_BLANK =
         "if(/请(?:输入|填写).{0,8}验证码|拖动.{0,8}滑块|滑动验证|人机验证|请.{0,4}(?:安全验证|完成验证)/i" +
         ".test(t)) return 'V';" +
         "return t.length<12?'E':'K';})()"
+
+/**
+ * 点「继续」前的复检：页面是不是还停在"等你输验证码"的状态。
+ *
+ * 返回：
+ * - `OK`   可以放行（不是验证页 / 已经验证成功 / 判断不出来）
+ * - `PEND` 还在等验证码输入，别放行
+ *
+ * 宁可漏判也不误判：判不出来一律 `OK`。
+ * 如果这里误判成 PEND，用户会卡在验证页出不去，那比多弹一次还难受——
+ * 所以只在"页面明确是验证页"且"仍存在可见输入控件/滑块"时才拦。
+ */
+private const val STILL_WAITING =
+    "(function(){try{" +
+        "var t=(document.body?document.body.innerText:'').slice(0,4000);" +
+        // 1) 明确成功 -> 放行
+        "if(/验证成功|验证通过|校验通过|操作成功/.test(t)) return 'OK';" +
+        // 2) 不是验证页 -> 放行（正常页面上也有搜索框，不能见到 input 就拦）
+        "if(!/验证码|滑块|安全验证|人机验证/.test(t)) return 'OK';" +
+        // 3) 是验证页：看还有没有可见的输入框或滑块容器
+        "function vis(el){try{var r=el.getBoundingClientRect();if(r.width<=0||r.height<=0)return false;" +
+        "var s=getComputedStyle(el);return s.visibility!=='hidden'&&s.display!=='none'&&s.opacity!=='0';}catch(e){return false;}}" +
+        "var ins=document.querySelectorAll('input:not([type=hidden])');" +
+        "for(var i=0;i<ins.length;i++){if(vis(ins[i])) return 'PEND';}" +
+        "if(document.querySelector('.nc-container,.nc_wrapper,.slide-verify,.verify-slider,[class*=captcha]')) return 'PEND';" +
+        "return 'OK';}catch(e){return 'OK';}})()"

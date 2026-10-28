@@ -97,7 +97,10 @@ class StudyController(
             VerifyGate.passed.collect {
                 val c = pendingResume ?: return@collect
                 pendingResume = null
-                if (running?.isActive != true) start(c)
+                if (running?.isActive == true) return@collect
+                // 和首页那边同样的理由：验证完立刻重打最容易被再拦一次，给一点缓冲
+                kotlinx.coroutines.delay(1_500)
+                start(c)
             }
         }
     }

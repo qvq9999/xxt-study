@@ -4,6 +4,7 @@ import android.Manifest
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
+import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
@@ -15,6 +16,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.platform.LocalContext
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.ui.Modifier
 import com.xxt.study.core.net.VerifyGate
@@ -57,6 +59,7 @@ class MainActivity : ComponentActivity() {
 
         setContent {
             StudyTheme {
+                val activityContext = LocalContext.current
                 // 页面不多，用状态变量管路由就够，不引导航库。
                 // 层级：登录 → 主壳（底部 tab：课程 / 我的）→ 课程列表 → 作业作答 / 刷课；
                 // 设置从「我的」进，不再挂在首页右上角
@@ -127,6 +130,23 @@ class MainActivity : ComponentActivity() {
                 // （刷课页的课程页踩过同一个坑），而验证本身是阻塞态，整页也说得通。
                 val verifyUrl by VerifyGate.pending.collectAsStateWithLifecycle()
 
+                /*
+                 * "验证疑似没生效"。
+                 *
+                 * 用户刚点完继续、业务立刻重试又被风控——说明验证其实没真的过
+                 * （最常见的是验证码输了但没点提交）。这时候 VerifyGate 不再重复弹窗，
+                 * 只发这个信号，由这里告诉用户原因，别让他对着同一页反复点。
+                 */
+                LaunchedEffect(Unit) {
+                    VerifyGate.suspected.collect {
+                        Toast.makeText(
+                            activityContext,
+                            "验证似乎没生效（可能验证码没提交成功）。已暂停请求 1 分钟，稍后再刷新",
+                            Toast.LENGTH_LONG,
+                        ).show()
+                    }
+                }
+
                 Box(
                     modifier = Modifier
                         .fillMaxSize()
@@ -136,7 +156,10 @@ class MainActivity : ComponentActivity() {
                         verifyUrl != null -> VerifyScreen(
                             url = verifyUrl!!,
                             cookies = container.cookies,
-                            onPassed = { VerifyGate.markPassed() },
+                            // VerifyScreen 内部已经调过 VerifyGate.finish()（导 Cookie + markPassed），
+                            // 这里**不能再 markPassed 一次**：重复放行会让业务收到两次"验证完成"，
+                            // 各自发起一轮重试，等于把风控撞得更狠
+                            onPassed = {},
                             onCancel = { VerifyGate.cancel() },
                         )
 

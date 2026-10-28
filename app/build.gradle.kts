@@ -42,11 +42,11 @@ android {
         applicationId = "com.xxt.study"
         minSdk = 26
         targetSdk = 37
-        // 0.6.0：作业状态按「服务端状态 × 截止时间 × 课程是否结课」重算
-        //        （结课/已截止不再挂红点）+ 内置更新（国内镜像优先）
+        // 0.6.1：修「验证码页无限循环」——验证后 45 秒保护期内不再重复弹窗，
+        //        点继续前先检查验证码是否真的提交了，重复放行/重复延长冷却都掐掉
         // versionCode 每次发布必须递增，否则覆盖安装会被拒，内置更新也会判成"没有新版"
-        versionCode = 16
-        versionName = "0.6.0"
+        versionCode = 17
+        versionName = "0.6.1"
     }
 
     buildTypes {

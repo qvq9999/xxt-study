@@ -7,6 +7,7 @@ import com.xxt.study.App
 import com.xxt.study.core.net.VerifyGate
 import com.xxt.study.core.result.Cx
 import com.xxt.study.domain.Snapshot
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -36,9 +37,23 @@ class HomeViewModel(app: Application) : AndroidViewModel(app) {
         // 人工验证通过后自动补扫一遍：失败过的课没进缓存，这次会重新取它们
         viewModelScope.launch {
             VerifyGate.passed.collect {
+                if (_state.value.loading) return@collect
+                /*
+                 * 验证完**不要**以最快的速度重试。
+                 *
+                 * 服务端刚判完风险，同一个账号立刻又甩一串请求，是最容易被再拦一次的节奏。
+                 * 给 1.5 秒缓冲：用户的观感是"回到列表 → 稍微转一下 → 数据来了"，
+                 * 而不是"刚点完继续又被拦"。
+                 */
+                delay(POST_VERIFY_DELAY_MS)
                 if (!_state.value.loading) refresh()
             }
         }
+    }
+
+    private companion object {
+        /** 验证完成到重新扫描之间的缓冲，见 init 里的注释 */
+        const val POST_VERIFY_DELAY_MS = 1_500L
     }
 
     /**
