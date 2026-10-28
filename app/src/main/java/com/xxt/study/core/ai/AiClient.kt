@@ -204,7 +204,7 @@ class AiClient(
                     if (resp.code !in 200..299) {
                         return@withTimeout Cx.Fail(Cx.Kind.DENIED, "AI 接口返回 HTTP ${resp.code}：${resp.body.take(160)}")
                     }
-                    parseAnswers(resp.body)
+                    parseAnswers(resp.body, questions)
                 }
             } catch (e: kotlinx.coroutines.TimeoutCancellationException) {
                 Cx.Fail(Cx.Kind.NETWORK, "AI 接口超时（120s）")
@@ -278,7 +278,19 @@ class AiClient(
                             .getValue("message").jsonObject
                             .getValue("content").jsonPrimitive.content
                     }.getOrNull()?.trim().orEmpty()
-                    if (content.isBlank()) Cx.Fail(Cx.Kind.PARSE, "模型返回空答案") else Cx.Ok(content)
+                    /*
+                     * 这里必须清洗。
+                     *
+                     * 重写的 user 消息几乎全是"要求"，模型一顺着说就把要求当成了答案，
+                     * 而那段文字常常刚好落在字数区间内 —— 直接回填等于把提示词写进作答框。
+                     * 清洗后为 null 就当作"这次重写失败"，保留上一版（宁可短，也不能塞垃圾）。
+                     */
+                    val clean = AnswerSanitizer.sanitize(content, q.stem)
+                    when {
+                        content.isBlank() -> Cx.Fail(Cx.Kind.PARSE, "模型返回空答案")
+                        clean == null -> Cx.Fail(Cx.Kind.PARSE, "模型复述了要求或照抄题干，没有真正作答")
+                        else -> Cx.Ok(clean)
+                    }
                 }
             } catch (e: kotlinx.coroutines.TimeoutCancellationException) {
                 Cx.Fail(Cx.Kind.NETWORK, "重写超时")
@@ -401,7 +413,7 @@ class AiClient(
     }
 
     /** 从 OpenAI 兼容响应里抠出 content，再解析成答案表 */
-    fun parseAnswers(body: String): Cx<AiResult> {
+    fun parseAnswers(body: String, questions: List<Question> = emptyList()): Cx<AiResult> {
         val root = runCatching { json.parseToJsonElement(body).jsonObject }.getOrNull()
             ?: return Cx.Fail(Cx.Kind.PARSE, "AI 响应不是 JSON")
         val message = runCatching {
@@ -423,13 +435,23 @@ class AiClient(
         val answers = obj["answers"]?.jsonArray
             ?: return Cx.Fail(Cx.Kind.PARSE, "AI 输出缺少 answers 字段")
 
+        val stemOf = questions.associate { it.qid to it.stem }
+
         val out = LinkedHashMap<String, List<String>>()
         for (item in answers) {
             val q = item as? JsonObject ?: continue
             val id = q["id"]?.jsonPrimitive?.content?.trim() ?: continue
             val list = runCatching { q["answer"]!!.jsonArray.map { it.jsonPrimitive.content.trim() } }
                 .getOrNull() ?: continue
-            if (list.isNotEmpty()) out[id] = list
+            /*
+             * 逐条过一遍清洗。
+             *
+             * 模型偶尔会把回答写成一整段"要求复述"（尤其是整卷 JSON 被 max_tokens 截断后
+             * 补出来的内容），直接回填等于把提示词写进作答框。见 AnswerSanitizer。
+             */
+            val cleaned = list.mapNotNull { AnswerSanitizer.sanitize(it, stemOf[id].orEmpty()) }
+                .filter { it.isNotBlank() }
+            if (cleaned.isNotEmpty()) out[id] = cleaned
         }
         if (out.isEmpty()) return Cx.Fail(Cx.Kind.PARSE, "AI 没有给出任何答案")
         return Cx.Ok(AiResult(out, reasoning, content))

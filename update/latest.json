@@ -1,13 +1,12 @@
 {
-  "versionCode": 21,
-  "versionName": "0.8.1",
+  "versionCode": 22,
+  "versionName": "0.8.2",
   "sizeBytes": 2535784,
-  "sha256": "0168181578c9e19b3aa355744e726487668398b27905ebe4718ae71787fdfc18",
+  "sha256": "9891f324eb24cb0c4205c44a239809f15d6c709320a8d5b5656b5dc557fa94e8",
   "notes": [
-    "版本日志改弹窗查看",
-    "我的页底部只留版本号",
-    "修提交后看不到结果"
+    "修简答题填成提示词",
+    "提交结果被裁可一键展开"
   ],
   "packageName": "com.xxt.study",
-  "url": "https://github.com/qvq9999/xxt-study/releases/download/v0.8.1/app-release.apk"
+  "url": "https://github.com/qvq9999/xxt-study/releases/download/v0.8.2/app-release.apk"
 }

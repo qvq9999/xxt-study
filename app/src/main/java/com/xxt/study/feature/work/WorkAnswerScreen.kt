@@ -54,6 +54,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import com.xxt.study.core.ai.AiClient
+import com.xxt.study.core.ai.AnswerSanitizer
 import com.xxt.study.core.ai.LengthRule
 import com.xxt.study.core.ai.LengthRules
 import com.xxt.study.core.net.Http
@@ -64,6 +65,7 @@ import com.xxt.study.data.remote.chaoxing.QuestionParser
 import com.xxt.study.data.remote.web.FillItem
 import com.xxt.study.data.remote.web.FillScript
 import com.xxt.study.data.repo.AnswerMapper
+import com.xxt.study.data.repo.SolvedAnswer
 import com.xxt.study.domain.QType
 import com.xxt.study.domain.Question
 import com.xxt.study.domain.Work
@@ -90,6 +92,68 @@ private const val TAG_SUBMITTED = "XXT_SUBMITTED"
 
 /** 页面滚动位置变化的信号前缀（带 0/1） */
 private const val TAG_SCROLL = "XXT_SCROLL:"
+
+/**
+ * 把被裁剪的容器撑开。
+ *
+ * 用户反馈：「提交完作业，结果只能看到一半，划到顶部也只有一半，像是网页本身显示有问题」——
+ * 这个判断是对的。学习通的结果面板常常放在一个**固定高度 + overflow:hidden** 的容器里
+ * （老 PC 版页面用 table/frame 布局），内容超出去就被裁掉：
+ * 页面本身不滚动、内容也拿不到，滚到哪儿都是"一半"。
+ *
+ * 做法：找出**内容确实溢出、而且被设为 hidden** 的容器，把高度限制与 hidden 一起去掉。
+ * 只动这一类元素——正常排版的容器（overflow 可见）一律不碰，避免把页面搞乱。
+ *
+ * 提交之后页面是只读的，改它的布局不会影响作答，所以这一步是安全的。
+ * 返回修正了几处，用回执告诉用户到底发生了什么（而不是"点了没反应"）。
+ */
+private const val UNCLIP = """
+(function(){
+  var fixed = 0;
+  function repair(doc){
+    var els;
+    try { els = doc.querySelectorAll('div,section,article,aside,td,iframe,ul,ol'); } catch(e) { return; }
+    for (var i = 0; i < els.length; i++) {
+      var el = els[i];
+      try {
+        var cs = doc.defaultView.getComputedStyle(el);
+        var clipY = el.scrollHeight - el.clientHeight > 12 &&
+                    (cs.overflowY === 'hidden' || cs.overflow === 'hidden');
+        var clipX = el.scrollWidth - el.clientWidth > 12 &&
+                    (cs.overflowX === 'hidden' || cs.overflow === 'hidden');
+        if (!clipY && !clipX) continue;
+        if (clipY) {
+          el.style.maxHeight = 'none';
+          el.style.height = 'auto';
+          el.style.overflowY = 'visible';
+        }
+        if (clipX) {
+          el.style.maxWidth = '100%';
+          el.style.overflowX = 'auto';
+        }
+        fixed++;
+      } catch(e) {}
+    }
+  }
+  repair(document);
+  // 同源 iframe 里的内容也一起处理（跨域的访问会抛异常，忽略即可）
+  try {
+    var frames = document.querySelectorAll('iframe');
+    for (var k = 0; k < frames.length; k++) {
+      try {
+        var d = frames[k].contentDocument;
+        if (d && d.body) {
+          frames[k].style.height = 'auto';
+          frames[k].style.minHeight = '600px';
+          repair(d);
+        }
+      } catch(e) {}
+    }
+  } catch(e) {}
+  try { document.documentElement.style.overflowX = 'auto'; } catch(e) {}
+  return '' + fixed;
+})()
+"""
 
 /**
  * 提交成功探测器（注入到学习通作答页里跑）。
@@ -247,6 +311,9 @@ fun WorkAnswerScreen(
     /** 页面是否已经往下滚过一段（决定要不要显示"回到顶部"浮动键） */
     var pageScrolledDown by remember { mutableStateOf(false) }
 
+    /** 提交后的补充提示（"已展开 3 处被裁剪的区域"这类），显示在提交状态条里 */
+    var submitHint by remember { mutableStateOf<String?>(null) }
+
     // 链接不合法就别去 loadUrl：加载空串只会得到一片白，用户看不出发生了什么
     val urlProblem = remember(work) {
         val u = work.detailUrl.trim()
@@ -319,10 +386,40 @@ fun WorkAnswerScreen(
         }
     }
 
-    /** 检测到提交成功后：置状态 + 把结果顶到视野里 */
+    /**
+     * 展开页面里被裁剪的容器，然后滚到顶部。
+     *
+     * @param quiet true = 自动执行；没改到任何东西就保持安静，别在状态条上刷没用的字
+     */
+    fun unclipPage(quiet: Boolean = false) {
+        val w = webView ?: return
+        scope.launch {
+            val n = evalJs(w, UNCLIP)?.trim()?.toIntOrNull()
+            scrollPageToTop()
+            val info = when {
+                n == null -> "已尝试展开页面内容"
+                n > 0 -> "已展开 $n 处被裁剪的区域"
+                else -> "没发现被裁剪的区域；如果还是显示不全，试试双指缩小页面"
+            }
+            if (!quiet || n == null || n > 0) submitHint = info
+        }
+    }
+
+    /** 检测到提交成功后：置状态 + 把结果顶到视野里 + 撑开被裁掉的部分 */
     fun onSubmitted() {
         if (!submitted) submitted = true
         scrollPageToTop()
+        /*
+         * 提交后等一会儿自动撑开被裁剪的容器。
+         *
+         * 结果面板是异步插进来的，撑早了没有目标；等 1.4 秒基本已经插完。
+         * 这一步不改任何数据，只是把 overflow:hidden + 固定高度 的容器放开，
+         * 让"只能看到一半"的结果完整显示出来。
+         */
+        scope.launch {
+            delay(1400)
+            unclipPage(quiet = true)
+        }
     }
 
     fun runGenerate(fresh: Boolean) {
@@ -438,7 +535,15 @@ fun WorkAnswerScreen(
             val planned = questions.mapIndexed { index, q ->
                 val given = effective[q.qid]
                 val solved = if (given == null) null else AnswerMapper.toAnswer(q, given)
-                Triple(index + 1, q, solved)
+                /*
+                 * 最后一道闸。
+                 *
+                 * 上游（AiClient）已经洗过一遍，这里再洗一遍是刻意的**双保险**：
+                 * 一旦哪条路径漏了清洗，代价是把提示词写进作答框、学生直接提交——
+                 * 比"这题没答案"的代价大得多。清洗不过就当作没答案，交给人工补。
+                 */
+                val guarded = solveTextGuard(q, solved)
+                Triple(index + 1, q, guarded)
             }
 
             val items = ArrayList<FillItem>()
@@ -619,36 +724,56 @@ fun WorkAnswerScreen(
          * 并且旁边留一个「回到顶部」——滚不动时他自己点一下也能到。
          */
         if (submitted) {
-            Row(
+            Column(
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(horizontal = 16.dp)
                     .clip(RoundedCornerShape(10.dp))
                     .background(Palette.okSoft)
-                    .clickable { scrollPageToTop() }
-                    .padding(horizontal = 10.dp, vertical = 7.dp),
-                verticalAlignment = Alignment.CenterVertically,
+                    .padding(horizontal = 10.dp, vertical = 8.dp),
             ) {
-                Icon(
-                    imageVector = Icons24.Check,
-                    contentDescription = null,
-                    modifier = Modifier.size(14.dp),
-                    tint = Palette.ok,
-                )
-                Text(
-                    text = "作业已提交，结果与得分在页面最上方",
-                    fontSize = 11.sp,
-                    color = Palette.ok,
-                    modifier = Modifier
-                        .weight(1f)
-                        .padding(start = 6.dp),
-                )
-                Text(
-                    text = "回到顶部",
-                    fontSize = 11.sp,
-                    fontWeight = FontWeight.Medium,
-                    color = Palette.brand,
-                )
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(
+                        imageVector = Icons24.Check,
+                        contentDescription = null,
+                        modifier = Modifier.size(14.dp),
+                        tint = Palette.ok,
+                    )
+                    Text(
+                        text = "作业已提交，结果在页面最上方",
+                        fontSize = 11.sp,
+                        color = Palette.ok,
+                        modifier = Modifier
+                            .weight(1f)
+                            .padding(start = 6.dp),
+                    )
+                }
+
+                submitHint?.let { hint ->
+                    Text(
+                        text = hint,
+                        fontSize = 10.sp,
+                        color = Palette.sub,
+                        lineHeight = 14.sp,
+                        modifier = Modifier.padding(top = 3.dp),
+                    )
+                }
+
+                /*
+                 * 两个动作分开放，别挤成一个。
+                 *
+                 * 「显示完整内容」针对的是**页面自己把结果裁掉了**（老 PC 版把结果放在
+                 * 固定高度 + overflow:hidden 的容器里，滚到哪儿都只有一半）；
+                 * 「回到顶部」针对的是**视口还在底部**。两种原因不同，混在一个按钮里
+                 * 会让用户以为点了没反应。
+                 */
+                Row(
+                    modifier = Modifier.padding(top = 6.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    SubmitChip("显示完整内容") { unclipPage() }
+                    SubmitChip("回到顶部") { scrollPageToTop() }
+                }
             }
             Spacer(Modifier.height(8.dp))
         }
@@ -716,8 +841,14 @@ fun WorkAnswerScreen(
                                  * 如果这一页是"提交后跳过来的结果页"，页面顶上来就已经有结论了，
                                  * 但 onPageFinished 时视口可能还停在上一个页面的位置——
                                  * 这里补一次滚动，别让用户对着中间一段发呆。
+                                 *
+                                 * 同时再撑一次被裁剪的容器：新页面是一份新的 DOM，
+                                 * 上一页改过的样式不会带过来。
                                  */
-                                if (submitted) scrollPageToTop()
+                                if (submitted) {
+                                    scrollPageToTop()
+                                    unclipPage(quiet = true)
+                                }
                             }
 
                             override fun onReceivedError(
@@ -1122,6 +1253,39 @@ internal fun parseMissed(receipt: String?): Set<String> {
         .split(',')
         .filter { it.isNotBlank() }
         .toSet()
+}
+
+/**
+ * 文本题（填空/简答）的最后一道清洗闸。
+ *
+ * 选择题的答案只有字母，不存在"把提示词抄进去"的问题；文本题才是重灾区。
+ * 复用 [AnswerSanitizer]：剥外壳 → 剔掉复述要求的行 → 仍然像要求/照抄题干的一律丢弃。
+ */
+private fun solveTextGuard(q: Question, solved: SolvedAnswer?): SolvedAnswer? {
+    val v = solved?.value ?: return solved
+    if (q.type != QType.SHORT && q.type != QType.FILL) return solved
+    val cleaned = AnswerSanitizer.sanitize(v, q.stem)
+        ?: return SolvedAnswer(q.qid, null, "答案像是在复述要求或照抄题干，已丢弃（请手动补答）")
+    return if (cleaned == v) solved else SolvedAnswer(q.qid, cleaned, solved.note)
+}
+
+/** 提交状态条上的小按钮（浅色底 + 品牌色字），两个并排放 */
+@Composable
+private fun SubmitChip(text: String, onClick: () -> Unit) {
+    Box(
+        modifier = Modifier
+            .clip(RoundedCornerShape(8.dp))
+            .background(Palette.card)
+            .clickable(onClick = onClick)
+            .padding(horizontal = 10.dp, vertical = 5.dp),
+    ) {
+        Text(
+            text = text,
+            fontSize = 11.sp,
+            fontWeight = FontWeight.Medium,
+            color = Palette.brand,
+        )
+    }
 }
 
 /** 把提交值拆成页面能匹配的数组：多选拆字母，其余整串 */

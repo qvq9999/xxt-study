@@ -42,10 +42,10 @@ android {
         applicationId = "com.xxt.study"
         minSdk = 26
         targetSdk = 37
-        // 0.8.1：版本日志改弹窗（「我的」页只留版本号）+ 提交成功后的结果显示修好
+        // 0.8.2：简答题不再把提示词填进作答框 + 提交结果被页面裁剪时可一键展开
         // versionCode 每次发布必须递增，否则覆盖安装会被拒，内置更新也会判成"没有新版"
-        versionCode = 21
-        versionName = "0.8.1"
+        versionCode = 22
+        versionName = "0.8.2"
     }
 
     buildTypes {

@@ -159,51 +159,82 @@ async function publishViaApi() {
       ...opts,
     })
 
-  try {
-    // 已存在同名 Release 时直接拒绝：覆盖上传会留下两个同名 asset，
-    // 用户装哪个都不确定，比失败更糟
-    const existing = call([`https://api.github.com/repos/${repo}/releases/tags/${tag}`])
+  /** 解析 JSON；失败返回 null（GitHub 偶尔返回空响应或 HTML 错误页，不能直接 JSON.parse） */
+  const jparse = (text) => {
     try {
-      const parsed = JSON.parse(existing)
-      if (parsed.id) {
-        console.error(`✗ Release ${tag} 已存在（id=${parsed.id}）。要重发请先在网页上删掉它，或换版本号`)
+      return JSON.parse(text)
+    } catch {
+      return null
+    }
+  }
+
+  /** 上传接口偶发返回空响应/半截 body，重试是唯一稳妥的处理 */
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
+
+  try {
+    // 已存在同名 Release 时：有资产就拒绝（覆盖上传会留下两个同名 asset，
+    // 用户装哪个都不确定，比失败更糟）；没有资产则直接补传——
+    // 上一次可能就死在"Release 建好了、包没传上去"这一步，不该让人先去网页删。
+    const existing = jparse(call([`https://api.github.com/repos/${repo}/releases/tags/${tag}`]))
+    let relId = 0
+    if (existing?.id) {
+      const assets = Array.isArray(existing.assets) ? existing.assets : []
+      if (assets.length > 0) {
+        console.error(`✗ Release ${tag} 已存在且有资产（id=${existing.id}）。要重发请先在网页上删掉它，或换版本号`)
         return
       }
-    } catch {
-      // 解析失败 = 404 的 {"message":"Not Found"}，正常，继续建
+      console.log(`  已存在同名 Release（id=${existing.id}）但没有资产，直接补传`)
+      relId = existing.id
     }
 
-    const created = call([
-      '-X', 'POST',
-      `https://api.github.com/repos/${repo}/releases`,
-      '-d', JSON.stringify({
-        tag_name: tag,
-        name: tag,
-        // 发布页同样用简写：和弹窗同一份文案
-        body: notes.map((n) => `- ${n}`).join('\n'),
-        draft: false,
-        prerelease: false,
-      }),
-    ])
-    const rel = JSON.parse(created)
-    if (!rel.id) {
-      console.error(`✗ 建 Release 失败：${rel.message ?? created.slice(0, 200)}`)
-      return
+    if (!relId) {
+      const created = call([
+        '-X', 'POST',
+        `https://api.github.com/repos/${repo}/releases`,
+        '-d', JSON.stringify({
+          tag_name: tag,
+          name: tag,
+          // 发布页同样用简写：和弹窗同一份文案
+          body: notes.map((n) => `- ${n}`).join('\n'),
+          draft: false,
+          prerelease: false,
+        }),
+      ])
+      const rel = jparse(created)
+      if (!rel?.id) {
+        console.error(`✗ 建 Release 失败：${rel?.message ?? (created || '(空响应)').slice(0, 200)}`)
+        return
+      }
+      relId = rel.id
     }
 
-    console.log(`  Release id=${rel.id}，上传 APK …`)
-    const uploaded = call([
-      '-X', 'POST',
-      '-H', 'Content-Type: application/vnd.android.package-archive',
-      '--data-binary', `@${apkPath}`,
-      `https://uploads.github.com/repos/${repo}/releases/${rel.id}/assets?name=app-release.apk`,
-    ])
-    const asset = JSON.parse(uploaded)
-    if (asset.id) {
+    console.log(`  Release id=${relId}，上传 APK …`)
+    let asset = null
+    for (let i = 1; i <= 3 && !asset; i++) {
+      let body = ''
+      try {
+        body = call([
+          '-X', 'POST',
+          '-H', 'Content-Type: application/vnd.android.package-archive',
+          '--data-binary', `@${apkPath}`,
+          `https://uploads.github.com/repos/${repo}/releases/${relId}/assets?name=app-release.apk`,
+        ])
+      } catch (e) {
+        body = String(e?.message ?? e)
+      }
+      asset = jparse(body)
+      if (!asset?.id) {
+        console.error(`  第 ${i} 次上传没有得到资产信息：${(body || '(空响应)').slice(0, 160)}`)
+        asset = null
+        await sleep(2000)
+      }
+    }
+
+    if (asset) {
       console.log(`✓ Release ${tag} 已发布，资产 ${asset.name}（${asset.size} 字节）`)
       console.log(`  ${asset.browser_download_url}`)
     } else {
-      console.error(`✗ 上传失败：${asset.message ?? uploaded.slice(0, 200)}`)
+      console.error(`✗ 上传三次都失败。Release ${tag} 已建好但没有包，重跑本脚本会自动补传`)
     }
   } finally {
     try {
