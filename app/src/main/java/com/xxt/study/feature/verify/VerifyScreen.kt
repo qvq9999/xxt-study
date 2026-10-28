@@ -221,8 +221,8 @@ fun VerifyScreen(
             Column(Modifier.weight(1f)) {
                 Text(
                     text = "需要完成验证",
-                    fontSize = 17.sp,
-                    fontWeight = FontWeight.Medium,
+                    fontSize = 18.sp,
+                    fontWeight = FontWeight.Bold,
                     color = Palette.ink,
                 )
                 Text(

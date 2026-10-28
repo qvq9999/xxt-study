@@ -38,10 +38,10 @@ internal object AiPrompt {
      *
      * `length` 字段只给简答题：模型看到"150-250 字"这种显式区间，比在规则里笼统说一句管用得多。
      */
-    fun user(questions: List<Question>): String {
+    fun user(questions: List<Question>, extra: String? = null): String {
         // 题目 JSON 与多轮优化共用一份，避免两处字段慢慢跑偏
         val arr = questionArray(questions)
-        return """
+        val base = """
             题目（JSON 数组）：
             $arr
 
@@ -64,6 +64,16 @@ internal object AiPrompt {
             不要把上面这些规则、题号、"answer 只放…"这类说明写进任何一道题的答案里。
             第一行就是 {，不要在 JSON 前后复述本段文字。
         """.trimIndent()
+        // extra 是"这次任务额外的硬约束"（如随堂练习的纯文本要求），
+        // 拼在规则末尾，不改通用那一段
+        /*
+         * extra 插在"规则"列表之后、"必须覆盖全部题目"之前。
+         * 不能直接拼在末尾：末尾那句"第一行就是 {"是给格式定性的，
+         * 后面再挂一段规则会把它的权重冲淡。
+         */
+        if (extra.isNullOrBlank()) return base
+        val anchor = "必须覆盖全部题目，id 必须与题目 id 完全一致。"
+        return base.replace(anchor, extra.trim() + "\n\n" + anchor)
     }
 
     /**

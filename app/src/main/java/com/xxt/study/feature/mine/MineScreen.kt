@@ -1,6 +1,7 @@
 package com.xxt.study.feature.mine
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -70,10 +71,10 @@ fun MineScreen(
     ) {
         Text(
             text = "我的",
-            fontSize = 22.sp,
-            fontWeight = FontWeight.Medium,
+            fontSize = 20.sp,
+            fontWeight = FontWeight.Bold,
             color = Palette.ink,
-            modifier = Modifier.padding(start = 20.dp, end = 20.dp, top = 18.dp, bottom = 12.dp),
+            modifier = Modifier.padding(start = 20.dp, end = 20.dp, top = 10.dp, bottom = 8.dp),
         )
 
         // ---- 账号卡 ----
@@ -81,8 +82,9 @@ fun MineScreen(
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(horizontal = 20.dp)
-                .clip(RoundedCornerShape(14.dp))
+                .clip(RoundedCornerShape(18.dp))
                 .background(Palette.card)
+                .border(1.dp, Palette.line, RoundedCornerShape(18.dp))
                 .padding(16.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
@@ -124,8 +126,9 @@ fun MineScreen(
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(horizontal = 20.dp)
-                .clip(RoundedCornerShape(14.dp))
-                .background(Palette.card),
+                .clip(RoundedCornerShape(18.dp))
+                .background(Palette.card)
+                .border(1.dp, Palette.line, RoundedCornerShape(18.dp)),
         ) {
             MineRow(
                 icon = Icons24.Tune,
@@ -156,8 +159,9 @@ fun MineScreen(
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(horizontal = 20.dp)
-                .clip(RoundedCornerShape(14.dp))
-                .background(Palette.card),
+                .clip(RoundedCornerShape(18.dp))
+                .background(Palette.card)
+                .border(1.dp, Palette.line, RoundedCornerShape(18.dp)),
         ) {
             MineRow(
                 icon = Icons24.Refresh,
@@ -188,8 +192,9 @@ fun MineScreen(
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(horizontal = 20.dp)
-                .clip(RoundedCornerShape(14.dp))
-                .background(Palette.card),
+                .clip(RoundedCornerShape(18.dp))
+                .background(Palette.card)
+                .border(1.dp, Palette.line, RoundedCornerShape(18.dp)),
         ) {
             MineRow(
                 icon = Icons24.Refresh,
@@ -217,7 +222,8 @@ fun MineScreen(
                 .padding(horizontal = 20.dp),
             textAlign = TextAlign.Center,
         )
-        Spacer(Modifier.height(24.dp))
+        // 悬浮导航覆盖在内容上：这里留 96dp，最后一行才不会被栏体永久挡住
+        Spacer(Modifier.height(96.dp))
         Spacer(Modifier.navigationBarsPadding())
     }
 }

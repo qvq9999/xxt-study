@@ -12,6 +12,7 @@ import com.xxt.study.core.update.UpdateInstaller
 import com.xxt.study.core.update.UpdateNotifier
 import com.xxt.study.data.local.SnapshotCache
 import com.xxt.study.data.remote.chaoxing.ChaoxingClient
+import com.xxt.study.data.remote.chaoxing.ActivityClient
 import com.xxt.study.data.remote.chaoxing.StudyClient
 import com.xxt.study.data.remote.web.WebWorkFetcher
 import com.xxt.study.data.repo.DefaultQuizHandler
@@ -69,6 +70,9 @@ class Container(app: Application) {
     )
 
     val studyClient: StudyClient = StudyClient(http)
+
+    /** 课堂活动（随堂练习）走 mobilelearn 的另一套接口，与 StudyClient 不共用 */
+    val activityClient: ActivityClient = ActivityClient(http)
 
     val ai: AiClient = AiClient(secrets, http)
 

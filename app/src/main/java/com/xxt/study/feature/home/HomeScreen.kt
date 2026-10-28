@@ -8,6 +8,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
@@ -89,6 +90,8 @@ fun HomeScreen(
         val expiredOf = { d: CourseDigest ->
             d.works.count { it.view(now, d.course.closed) == WorkView.EXPIRED }
         }
+        // 卡外不再有裸文字行：覆盖课数、刷新时间、数据较旧、刷新进度全部进卡片，
+        // 卡片高度固定，因此这些状态变化不会顶动下面的列表
         TodoBlock(
             todo = snapshot?.courses?.sumOf { actionableOf(it) } ?: 0,
             subtitle = when {
@@ -96,26 +99,9 @@ fun HomeScreen(
                 else -> "覆盖 ${snapshot.courseCount} 门课 · ${agoText(snapshot.at)}刷新" +
                     if (snapshot.failedCount > 0) " · ${snapshot.failedCount} 门未取到" else ""
             },
+            note = snapshot?.note,
+            busy = state.progress,
         )
-
-        state.progress?.let {
-            Text(
-                text = it,
-                fontSize = 12.sp,
-                color = Palette.sub,
-                modifier = Modifier.padding(horizontal = 20.dp, vertical = 4.dp),
-            )
-        }
-
-        snapshot?.note?.let { note ->
-            Text(
-                text = note,
-                fontSize = 11.sp,
-                color = Palette.alarm,
-                lineHeight = 16.sp,
-                modifier = Modifier.padding(horizontal = 20.dp, vertical = 4.dp),
-            )
-        }
 
         state.error?.let { err ->
             ErrorBanner(
@@ -150,28 +136,6 @@ fun HomeScreen(
             SearchBar(value = query, onChange = { query = it })
         }
 
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 20.dp, vertical = 4.dp),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Text(
-                text = if (query.isBlank()) "按课程" else "搜索「${query.trim()}」",
-                fontSize = 12.sp,
-                fontWeight = FontWeight.Medium,
-                color = Palette.sub,
-            )
-            if (courses.isNotEmpty()) {
-                Text(
-                    text = if (query.isBlank()) "${courses.size} 门" else "${shown.size}/${courses.size} 门",
-                    fontSize = 12.sp,
-                    color = Palette.weak,
-                )
-            }
-        }
-
         when {
             snapshot == null && state.loading -> CenterHint("正在读取课程与作业", Modifier.weight(1f))
             snapshot == null -> CenterHint("点右上角刷新试试", Modifier.weight(1f))
@@ -181,7 +145,7 @@ fun HomeScreen(
                 modifier = Modifier
                     .fillMaxWidth()
                     .weight(1f),
-                contentPadding = PaddingValues(start = 20.dp, end = 20.dp, top = 4.dp, bottom = 24.dp),
+                contentPadding = PaddingValues(start = 20.dp, end = 20.dp, top = 6.dp, bottom = 100.dp),
                 verticalArrangement = Arrangement.spacedBy(8.dp),
             ) {
                 /*
@@ -195,13 +159,20 @@ fun HomeScreen(
                 val active = rest.filter { actionableOf(it) > 0 }
                 val archived = rest.filter { actionableOf(it) <= 0 }
 
-                item(key = "pinned-header") {
-                    if (pinnedCourses.isNotEmpty()) {
+                /*
+                 * 没有置顶课时**不插入这个 item**。
+                 *
+                 * 之前是 item 里再 if 判空：空 item 高度为 0，但 spacedBy(8dp) 仍会在它
+                 * 前后各留一份间距 —— 视觉上就是"按课程"下面空了一大块。
+                 * 条件写在 item 外面，列表第一项直接就是课程卡。
+                 */
+                if (pinnedCourses.isNotEmpty()) {
+                    item(key = "pinned-header") {
                         Text(
                             text = "置顶 · ${pinnedCourses.size} 门",
                             fontSize = 11.sp,
                             color = Palette.weak,
-                            modifier = Modifier.padding(start = 2.dp, top = 2.dp),
+                            modifier = Modifier.padding(start = 2.dp, bottom = 2.dp),
                         )
                     }
                 }
@@ -241,7 +212,7 @@ fun HomeScreen(
                                 text = "其他课程",
                                 fontSize = 11.sp,
                                 color = Palette.weak,
-                                modifier = Modifier.padding(start = 2.dp, top = 6.dp),
+                                modifier = Modifier.padding(start = 2.dp, bottom = 2.dp),
                             )
                         }
                     }
@@ -385,15 +356,15 @@ private fun HomeHeader(
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(start = 20.dp, end = 12.dp, top = 8.dp, bottom = 2.dp),
+            .padding(start = 20.dp, end = 12.dp, top = 10.dp, bottom = 8.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        // 0.9.0：删掉"作业助手"副标题那行、标题 20→18sp。
-        // 一屏里它只起"我在哪一页"的作用，不值得占一行高度
+        // 升到 20sp / Bold：B 方案的层级是"页标题压住主卡"，
+        // 18sp Medium 和主卡里的 32sp 数字差太小，读起来分不清谁是标题
         Text(
             text = "学习通",
-            fontSize = 18.sp,
-            fontWeight = FontWeight.Medium,
+            fontSize = 20.sp,
+            fontWeight = FontWeight.Bold,
             color = Palette.ink,
             modifier = Modifier.weight(1f),
         )
@@ -418,8 +389,8 @@ private fun IconAction(
 ) {
     Box(
         modifier = Modifier
-            .size(40.dp)
-            .clip(RoundedCornerShape(10.dp))
+            .size(38.dp)
+            .clip(RoundedCornerShape(12.dp))
             .combinedClickable(
                 enabled = enabled,
                 onClick = onClick,
@@ -430,28 +401,35 @@ private fun IconAction(
         Icon(
             imageVector = icon,
             contentDescription = label,
-            modifier = Modifier.size(22.dp),
+            modifier = Modifier.size(21.dp),
             tint = if (enabled) Palette.sub else Palette.line,
         )
     }
 }
 
-/** 课程搜索框：内存过滤，不走网络 */
+/**
+ * 课程搜索框：内存过滤，不走网络。
+ *
+ * 做成胶囊 + 1dp 描边，而不是"白卡 + 阴影"：
+ * 它紧贴主卡下沿，有阴影会和主卡糊在一起；描边则始终干净。
+ */
 @Composable
 private fun SearchBar(value: String, onChange: (String) -> Unit) {
+    val shape = RoundedCornerShape(20.dp)
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(horizontal = 20.dp, vertical = 2.dp)
-            .clip(RoundedCornerShape(10.dp))
+            .padding(horizontal = 20.dp, vertical = 5.dp)
+            .clip(shape)
             .background(Palette.card)
-            .padding(horizontal = 10.dp, vertical = 7.dp),
+            .border(1.dp, Palette.line, shape)
+            .padding(horizontal = 13.dp, vertical = 10.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Icon(
             imageVector = Icons24.Search,
             contentDescription = null,
-            modifier = Modifier.size(16.dp),
+            modifier = Modifier.size(15.dp),
             tint = Palette.weak,
         )
         Box(

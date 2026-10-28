@@ -2,6 +2,7 @@ package com.xxt.study.feature.work
 
 import android.widget.Toast
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -63,7 +64,13 @@ fun WorkListScreen(
     onBack: () -> Unit,
     onDigestUpdated: (CourseDigest) -> Unit,
     onOpenWork: (Work) -> Unit,
-    onStartStudy: () -> Unit,
+    /**
+     * 是否被课程页嵌进「作业」页签。
+     *
+     * true 时不再画返回键与课程名（外层已经有），也不再申请状态栏内边距，
+     * 只保留右侧的「刷新」「刷课」两个操作。
+     */
+    embedded: Boolean = false,
 ) {
     // 每 30 秒走一次：倒计时按分钟/小时显示，秒级刷新只是白耗电
     val now = rememberNow()
@@ -111,14 +118,20 @@ fun WorkListScreen(
         modifier = Modifier
             .fillMaxSize()
             .background(Palette.bg)
-            .statusBarsPadding(),
+            .then(if (embedded) Modifier else Modifier.statusBarsPadding()),
     ) {
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(start = 8.dp, end = 20.dp, top = 14.dp, bottom = 6.dp),
+                .padding(
+                    start = if (embedded) 20.dp else 8.dp,
+                    end = 20.dp,
+                    top = if (embedded) 6.dp else 14.dp,
+                    bottom = 6.dp,
+                ),
             verticalAlignment = Alignment.CenterVertically,
         ) {
+            if (!embedded) {
             Box(
                 modifier = Modifier
                     .size(40.dp)
@@ -137,7 +150,7 @@ fun WorkListScreen(
                 Text(
                     text = digest.course.name.ifBlank { "未命名课程" },
                     fontSize = 18.sp,
-                    fontWeight = FontWeight.Medium,
+                    fontWeight = FontWeight.Bold,
                     color = Palette.ink,
                 )
                 Text(
@@ -152,6 +165,10 @@ fun WorkListScreen(
                     color = Palette.weak,
                     modifier = Modifier.padding(top = 2.dp),
                 )
+            }
+            } else {
+                // 嵌入模式：标题在上层，这里用弹性空白把操作推到右边
+                Spacer(Modifier.weight(1f))
             }
             // 刷新这门课的作业状态：只重拉这一门，不整页重扫
             Box(
@@ -175,22 +192,6 @@ fun WorkListScreen(
                         tint = Palette.sub,
                     )
                 }
-            }
-            Spacer(Modifier.width(6.dp))
-            // 刷课入口放在课程页而不是首页：刷课是按课程跑的，先选中课程才谈得上刷
-            Box(
-                modifier = Modifier
-                    .clip(RoundedCornerShape(10.dp))
-                    .background(Palette.brandSoft)
-                    .clickable(onClick = onStartStudy)
-                    .padding(horizontal = 14.dp, vertical = 8.dp),
-            ) {
-                Text(
-                    text = "刷课",
-                    fontSize = 12.sp,
-                    fontWeight = FontWeight.Medium,
-                    color = Palette.brand,
-                )
             }
         }
 
@@ -271,8 +272,9 @@ private fun WorkRow(work: Work, now: Long, closed: Boolean, onClick: () -> Unit)
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .clip(RoundedCornerShape(14.dp))
+            .clip(RoundedCornerShape(18.dp))
             .background(Palette.card)
+            .border(1.dp, Palette.line, RoundedCornerShape(18.dp))
             .clickable(onClick = onClick)
             .padding(horizontal = 14.dp, vertical = 14.dp),
         verticalAlignment = Alignment.CenterVertically,

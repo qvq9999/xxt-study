@@ -160,8 +160,8 @@ fun LoginScreen(onLoggedIn: () -> Unit) {
             Column(modifier = Modifier.weight(1f)) {
                 Text(
                     text = "登录学习通",
-                    fontSize = 17.sp,
-                    fontWeight = FontWeight.Medium,
+                    fontSize = 18.sp,
+                    fontWeight = FontWeight.Bold,
                     color = Palette.ink,
                 )
                 Text(

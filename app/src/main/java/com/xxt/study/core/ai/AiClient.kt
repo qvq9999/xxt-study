@@ -176,7 +176,7 @@ class AiClient(
      * 也让模型能利用卷内的上下文。代价是单次请求更大，用 120 秒超时兜住。
      *
      */
-    suspend fun answer(questions: List<Question>): Cx<AiResult> {
+    suspend fun answer(questions: List<Question>, extra: String? = null): Cx<AiResult> {
         if (questions.isEmpty()) return Cx.Ok(AiResult(emptyMap(), null, ""))
         val cfg = config() ?: return Cx.Fail(Cx.Kind.DENIED, "还没配置 AI 接口，先去设置里填 Base URL / 密钥 / 模型")
 
@@ -193,7 +193,7 @@ class AiClient(
                 })
                 add(buildJsonObject {
                     put("role", "user")
-                    put("content", AiPrompt.user(questions))
+                    put("content", AiPrompt.user(questions, extra))
                 })
             })
         }.toString()
@@ -486,7 +486,16 @@ class AiClient(
         }.getOrNull()?.takeIf { it.isNotBlank() }
 
         val jsonText = stripFence(content)
+        /*
+         * 两段式解析：先按原样解，失败再"修一次"。
+         *
+         * 长文本答案（简答题）最常见的破坏方式是字符串里直接带裸换行、
+         * 以及数组末尾多一个逗号 —— 模型写 Markdown 习惯带出来的。
+         * 这类错误只需要转义控制字符 + 去掉多余逗号就能救回来，
+         * 直接报"没按要求输出 JSON"让用户重试是最差的选择。
+         */
         val obj = runCatching { json.parseToJsonElement(jsonText).jsonObject }.getOrNull()
+            ?: runCatching { json.parseToJsonElement(repairJson(jsonText)).jsonObject }.getOrNull()
             ?: return Cx.Fail(Cx.Kind.PARSE, "AI 没按要求输出 JSON：${content.take(120)}")
 
         val answers = obj["answers"]?.jsonArray
@@ -524,6 +533,32 @@ class AiClient(
         val a = s.indexOf('{')
         val b = s.lastIndexOf('}')
         return if (a >= 0 && b > a) s.substring(a, b + 1) else s.trim()
+    }
+
+    /**
+     * 修复模型给坏的 JSON：转义字符串里的裸控制字符、去掉 } / ] 前的多余逗号。
+     *
+     * 只做这两件"一定安全"的事：
+     * - 裸换行/制表符在 JSON 字符串里非法，但转成 \n 语义不变；
+     * - 尾逗号是语法错误，删掉不影响数据。
+     * 不做引号猜测（改错一个引号就会把答案切碎），宁可让上层走逐题兜底。
+     */
+    private fun repairJson(raw: String): String {
+        val sb = StringBuilder(raw.length + 32)
+        var inString = false
+        var escaped = false
+        for (c in raw) {
+            when {
+                escaped -> { sb.append(c); escaped = false }
+                c == '\\' && inString -> { sb.append(c); escaped = true }
+                c == '"' -> { sb.append(c); inString = !inString }
+                inString && c == '\n' -> sb.append("\\n")
+                inString && c == '\r' -> sb.append("\\r")
+                inString && c == '\t' -> sb.append("\\t")
+                else -> sb.append(c)
+            }
+        }
+        return sb.toString().replace(Regex(",\\s*([}\\]])"), "$1")
     }
 
     private val json = Json { ignoreUnknownKeys = true; isLenient = true }

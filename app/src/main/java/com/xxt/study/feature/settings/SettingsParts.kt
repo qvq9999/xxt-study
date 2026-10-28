@@ -1,6 +1,7 @@
 package com.xxt.study.feature.settings
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -57,7 +58,7 @@ internal fun SettingsHeader(title: String, onBack: () -> Unit) {
         Text(
             text = title,
             fontSize = 18.sp,
-            fontWeight = FontWeight.Medium,
+            fontWeight = FontWeight.Bold,
             color = Palette.ink,
             modifier = Modifier.padding(start = 4.dp),
         )
@@ -69,8 +70,9 @@ internal fun SettingsCard(title: String, content: @Composable () -> Unit) {
     Column(
         modifier = Modifier
             .fillMaxWidth()
-            .clip(RoundedCornerShape(14.dp))
+            .clip(RoundedCornerShape(18.dp))
             .background(Palette.card)
+            .border(1.dp, Palette.line, RoundedCornerShape(18.dp))
             .padding(16.dp),
     ) {
         Text(title, fontSize = 14.sp, fontWeight = FontWeight.Medium, color = Palette.ink)

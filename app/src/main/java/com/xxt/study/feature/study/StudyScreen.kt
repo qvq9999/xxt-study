@@ -13,6 +13,7 @@ import android.webkit.WebViewClient
 import android.widget.Toast
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -88,6 +89,13 @@ fun StudyScreen(
     cookies: CookieStore,
     onBack: () -> Unit,
     onOpenSettings: () -> Unit = {},
+    /**
+     * 是否被课程页嵌进「章节」页签。
+     *
+     * true 时不画返回键与课程名（外层已有），也不申请状态栏内边距；
+     * 右侧的「AI 模型」「刷新页面」保留，否则嵌进去就换不了模型了。
+     */
+    embedded: Boolean = false,
 ) {
     val state by controller.state.collectAsStateWithLifecycle()
     val ctx = LocalContext.current
@@ -234,14 +242,20 @@ fun StudyScreen(
         modifier = Modifier
             .fillMaxSize()
             .background(Palette.bg)
-            .statusBarsPadding(),
+            .then(if (embedded) Modifier else Modifier.statusBarsPadding()),
     ) {
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(start = 8.dp, end = 14.dp, top = 14.dp, bottom = 8.dp),
+                .padding(
+                    start = if (embedded) 20.dp else 8.dp,
+                    end = 14.dp,
+                    top = if (embedded) 6.dp else 14.dp,
+                    bottom = 8.dp,
+                ),
             verticalAlignment = Alignment.CenterVertically,
         ) {
+            if (!embedded) {
             Box(
                 modifier = Modifier
                     .size(40.dp)
@@ -269,8 +283,8 @@ fun StudyScreen(
             Column(Modifier.weight(1f).padding(start = 4.dp)) {
                 Text(
                     text = course.name.ifBlank { "未命名课程" },
-                    fontSize = 17.sp,
-                    fontWeight = FontWeight.Medium,
+                    fontSize = 18.sp,
+                    fontWeight = FontWeight.Bold,
                     color = Palette.ink,
                     maxLines = 1,
                 )
@@ -284,6 +298,13 @@ fun StudyScreen(
                     fontSize = 11.sp,
                     color = if (state.running) Palette.ok else Palette.weak,
                 )
+            }
+            } else {
+                // 嵌入模式：标题由课程页给，这里只留操作；网页模式下补一个出口
+                Spacer(Modifier.weight(1f))
+                if (webMode) {
+                    TinyAction("关闭网页") { webMode = false }
+                }
             }
             if (webMode) {
                 TinyAction("刷新页面") {
@@ -315,8 +336,9 @@ fun StudyScreen(
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(horizontal = 20.dp)
-                    .clip(RoundedCornerShape(14.dp))
+                    .clip(RoundedCornerShape(18.dp))
                     .background(Palette.card)
+                    .border(1.dp, Palette.line, RoundedCornerShape(18.dp))
                     .padding(14.dp),
             ) {
                 Text(

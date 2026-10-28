@@ -44,8 +44,8 @@ android {
         targetSdk = 37
         // 0.9.2：课程置顶 + 每门课独立刷新 + 里外计数同步 + 思考过程折叠 + 内容不截断
         // versionCode 每次发布必须递增，否则覆盖安装会被拒，内置更新也会判成"没有新版"
-        versionCode = 25
-        versionName = "0.9.2"
+        versionCode = 26
+        versionName = "1.0.0"
     }
 
     buildTypes {

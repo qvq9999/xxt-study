@@ -320,10 +320,10 @@ class StudyRepo(
 
         val notes = buildList {
             if (client.lastCoursesDegraded) {
-                add("课程列表来自备用源（JSON 未取到），个别课程可能缺参数、点不开")
+                add("课程列表来自备用源 · 个别课可能点不开")
             }
             if (deferred > 0 && !force) {
-                add("还有 $deferred 门课数据较旧，下次刷新会继续更新（一次只扫 $DEFAULT_MAX_PER_SCAN 门，避免触发风控）")
+                add("$deferred 门数据较旧 · 长按刷新可全量重扫")
             }
         }
 

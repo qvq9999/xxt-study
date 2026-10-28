@@ -35,22 +35,48 @@ data class PaletteColors(
     val alarmSoft: Color,
     val ok: Color,
     val okSoft: Color,
+    /** 待办主卡的渐变起止色。两色只差一个明度台阶，不是撞色渐变——见 [LightPalette] 注释 */
+    val heroFrom: Color,
+    val heroTo: Color,
+    /** 主卡上的文字色。深色模式下主卡是深底，文字必须跟着反色 */
+    val onHero: Color,
+    /**
+     * 实心 [brand] 块上的文字色。
+     *
+     * 浅色下 brand 是深墨蓝 → 白字；深色下 brand 被调亮成浅蓝，
+     * 白字会糊成一片，必须换成近黑。所以它不能写死成 Color.White。
+     */
+    val onBrand: Color,
 )
 
-/** 浅色：墨蓝配砖红，砖红是唯一高饱和色，只用于"未完成数量"和错误态 */
+/**
+ * 浅色：冷灰底 + 白色卡片 + 墨蓝单一主色。
+ *
+ * 为什么 bg 带一点蓝（#F2F5FA）而不是纯中性灰：卡片是纯白，
+ * 中性灰底会让白卡片显得"浮"在纸上；带 2% 蓝的冷灰能把白卡片压住，
+ * 又不会像暖灰那样在 OLED / 低色域屏上发黄。
+ *
+ * 为什么主卡不是高对比渐变：渐变跨度越大，GPU 每帧插值越费、在 6bit 屏上越容易出色带。
+ * 这里只取 [brand] 到 [heroTo] 一个明度台阶（约 12% 亮度差），
+ * 既能读成"一张有质感的卡"，又不触发色带，代价几乎为零。
+ */
 val LightPalette = PaletteColors(
-    ink = Color(0xFF1B1F24),
-    sub = Color(0xFF5C6470),
-    weak = Color(0xFF8C949F),
-    bg = Color(0xFFF5F6F8),
+    ink = Color(0xFF141A22),
+    sub = Color(0xFF5A6573),
+    weak = Color(0xFF97A2B2),
+    bg = Color(0xFFF2F5FA),
     card = Color(0xFFFFFFFF),
-    line = Color(0xFFE6E8EB),
-    brand = Color(0xFF2A5C8A),
-    brandSoft = Color(0xFFE8EFF6),
+    line = Color(0xFFE4E9F1),
+    brand = Color(0xFF2F6291),
+    brandSoft = Color(0xFFE7EFF7),
     alarm = Color(0xFFC0432F),
-    alarmSoft = Color(0xFFFBEAE7),
-    ok = Color(0xFF2F6D4F),
-    okSoft = Color(0xFFE8F2EC),
+    alarmSoft = Color(0xFFFBEDEA),
+    ok = Color(0xFF2E6B4F),
+    okSoft = Color(0xFFE9F4EE),
+    heroFrom = Color(0xFF2F6291),
+    heroTo = Color(0xFF3E7BA8),
+    onHero = Color(0xFFFFFFFF),
+    onBrand = Color(0xFFFFFFFF),
 )
 
 /**
@@ -67,19 +93,45 @@ val LightPalette = PaletteColors(
  * - [brand] / [alarm] / [ok] 都比浅色版**调亮**：原来那几个深色在纯黑上读不出来。
  */
 val DarkPalette = PaletteColors(
-    ink = Color(0xFFE8EAED),
-    sub = Color(0xFFA3A9B3),
-    weak = Color(0xFF6E757F),
+    ink = Color(0xFFE9ECF1),
+    sub = Color(0xFFA2AAB6),
+    weak = Color(0xFF6D7581),
     bg = Color(0xFF000000),
-    card = Color(0xFF0D0D0D),
-    line = Color(0xFF232629),
-    brand = Color(0xFF7FB2E5),
-    brandSoft = Color(0xFF12202E),
+    card = Color(0xFF0E1116),
+    line = Color(0xFF22262C),
+    brand = Color(0xFF8AB8E6),
+    brandSoft = Color(0xFF12202C),
     alarm = Color(0xFFF08A78),
     alarmSoft = Color(0xFF2A1613),
     ok = Color(0xFF6FBF8F),
     okSoft = Color(0xFF10241A),
+    /*
+     * 深色主卡不能沿用浅色的亮蓝：白字压在 #2F6291 上对比度只有 3.4:1，
+     * 而深色模式的主卡本来就该"沉下去"。这里改成比背景亮两级的深蓝，
+     * [onHero] 用主文字色，层级靠明度差表达。
+     */
+    heroFrom = Color(0xFF16324A),
+    heroTo = Color(0xFF0F2233),
+    onHero = Color(0xFFE9ECF1),
+    onBrand = Color(0xFF08131C),
 )
+
+/**
+ * ---- 视觉规范（改样式先看这里，避免每个页面各自发挥）----
+ *
+ * 圆角只有三档，其余数值视为错误：
+ * - 卡片 / 弹窗 **18dp**
+ * - 行内小块 / 按钮 **10dp**（更小的用 8dp）
+ * - 胶囊 / 输入框 **高度的一半**（40dp 高 → 20dp）
+ *
+ * 字号固定几档：11（辅助）/ 12（次要）/ 13（正文小）/ 14（行标题）/ 20（页标题）/ 32（主卡数字）。
+ * 颜色一律走 [Palette]；页面里出现 `Color(0x…)` 视为错误。
+ *
+ * 性能约定：**不用阴影、不用模糊、不用尺寸动画**。
+ * 层级靠 1dp 描边（[PaletteColors.line]）与底色差表达；
+ * 唯一允许的动效是颜色 / 透明度的短淡入（≤160ms），因为它不触发重新测量布局。
+ * 这一条是本项目"41 门课长列表能滚顺"的前提，不要再加回 elevation 与 blur。
+ */
 
 /** 当前生效的配色；[StudyTheme] 在主题层替换它 */
 internal val LocalPalette = staticCompositionLocalOf { LightPalette }
@@ -127,6 +179,18 @@ object Palette {
 
     val okSoft: Color
         @Composable @ReadOnlyComposable get() = LocalPalette.current.okSoft
+
+    val heroFrom: Color
+        @Composable @ReadOnlyComposable get() = LocalPalette.current.heroFrom
+
+    val heroTo: Color
+        @Composable @ReadOnlyComposable get() = LocalPalette.current.heroTo
+
+    val onHero: Color
+        @Composable @ReadOnlyComposable get() = LocalPalette.current.onHero
+
+    val onBrand: Color
+        @Composable @ReadOnlyComposable get() = LocalPalette.current.onBrand
 }
 
 private val LightColors = lightColorScheme(

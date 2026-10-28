@@ -47,11 +47,10 @@ import com.xxt.study.feature.login.LoginScreen
 import com.xxt.study.feature.mine.GuideScreen
 import com.xxt.study.feature.perm.PermissionSetupDialog
 import com.xxt.study.feature.settings.SettingsScreen
-import com.xxt.study.feature.study.StudyScreen
+import com.xxt.study.feature.course.CourseScreen
 import com.xxt.study.feature.update.UpdateDialog
 import com.xxt.study.feature.verify.VerifyScreen
 import com.xxt.study.feature.work.WorkAnswerScreen
-import com.xxt.study.feature.work.WorkListScreen
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 
@@ -101,7 +100,6 @@ class MainActivity : ComponentActivity() {
                 var showSettings by remember { mutableStateOf(false) }
                 var showGuide by remember { mutableStateOf(false) }
                 var openCourse by remember { mutableStateOf<CourseDigest?>(null) }
-                var studyCourse by remember { mutableStateOf<Course?>(null) }
                 var answerWork by remember { mutableStateOf<Work?>(null) }
                 var tab by remember { mutableStateOf(MainTab.Courses) }
 
@@ -208,13 +206,12 @@ class MainActivity : ComponentActivity() {
                  */
                 BackHandler(
                     enabled = loggedIn && (
-                        answerWork != null || studyCourse != null || openCourse != null ||
+                        answerWork != null || openCourse != null ||
                             showSettings || showGuide || tab == MainTab.Mine
                         ),
                 ) {
                     when {
                         answerWork != null -> answerWork = null
-                        studyCourse != null -> studyCourse = null
                         openCourse != null -> openCourse = null
                         showGuide -> showGuide = false
                         showSettings -> showSettings = false
@@ -269,15 +266,6 @@ class MainActivity : ComponentActivity() {
                             onBack = { showSettings = false },
                         )
 
-                        studyCourse != null -> StudyScreen(
-                            course = studyCourse!!,
-                            controller = container.study,
-                            ai = container.ai,
-                            cookies = container.cookies,
-                            onBack = { studyCourse = null },
-                            onOpenSettings = { showSettings = true },
-                        )
-
                         answerWork != null -> WorkAnswerScreen(
                             work = answerWork!!,
                             ai = container.ai,
@@ -285,14 +273,18 @@ class MainActivity : ComponentActivity() {
                             onOpenSettings = { showSettings = true },
                         )
 
-                        openCourse != null -> WorkListScreen(
+                        openCourse != null -> CourseScreen(
                             digest = openCourse!!,
                             repo = container.repo,
+                            controller = container.study,
+                            ai = container.ai,
+                            cookies = container.cookies,
+                            activities = container.activityClient,
                             onBack = { openCourse = null },
                             // 单课刷新后把新结果顶回状态，页面和首页数字一起更新
                             onDigestUpdated = { openCourse = it },
                             onOpenWork = { answerWork = it },
-                            onStartStudy = { studyCourse = openCourse!!.course },
+                            onOpenSettings = { showSettings = true },
                         )
 
                         else -> MainShell(
