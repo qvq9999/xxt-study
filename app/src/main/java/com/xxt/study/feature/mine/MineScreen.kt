@@ -19,7 +19,10 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -30,6 +33,8 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.xxt.study.core.ui.Icons24
 import com.xxt.study.core.ui.Palette
+import com.xxt.study.core.update.ChangeEntry
+import com.xxt.study.core.update.Changelog
 import com.xxt.study.core.update.UpdatePhase
 import com.xxt.study.core.update.UpdateUiState
 import com.xxt.study.domain.Session
@@ -114,7 +119,7 @@ fun MineScreen(
 
         Spacer(Modifier.height(14.dp))
 
-        // ---- 设置 ----
+        // ---- 功能 ----
         Column(
             modifier = Modifier
                 .fillMaxWidth()
@@ -125,7 +130,7 @@ fun MineScreen(
             MineRow(
                 icon = Icons24.Tune,
                 title = "设置",
-                subtitle = "AI 服务商与密钥、自动答题",
+                subtitle = "外观主题、AI 服务商与密钥、自动答题",
                 onClick = onOpenSettings,
             )
             MineRow(
@@ -134,12 +139,19 @@ fun MineScreen(
                 subtitle = "功能教程、AI Key 获取地址（可一键复制）",
                 onClick = onOpenGuide,
             )
+            MineRow(
+                icon = Icons24.Alert,
+                title = "权限",
+                subtitle = "通知、安装未知应用 · 缺一个都会影响功能",
+                onClick = onOpenPermissions,
+            )
         }
 
         Spacer(Modifier.height(14.dp))
 
-        // ---- 关于 / 更新 ----
+        // ---- 更新与关于 ----
         val row = updateRowText(updateState, version)
+        var logOpen by remember { mutableStateOf(false) }
         Column(
             modifier = Modifier
                 .fillMaxWidth()
@@ -151,16 +163,45 @@ fun MineScreen(
                 icon = Icons24.Refresh,
                 title = row.title,
                 subtitle = row.subtitle,
-                // 检查中/下载中不让重复点，避免连点发出一串请求
+                // 检查中不让重复点，避免连点发出一串请求
                 enabled = updateState.phase != UpdatePhase.CHECKING,
                 onClick = onUpdateClick,
             )
+
+            /*
+             * 版本日志：默认就摊开最近两版。
+             *
+             * 用户要的是"能直接看到最近改了什么"，如果做成"点进去才显示"，
+             * 等于又藏了一层。两版是折叠状态下的上限，再往下点一下展开全部。
+             */
             MineRow(
-                icon = Icons24.Alert,
-                title = "权限",
-                subtitle = "通知、安装未知应用 · 缺一个都会影响功能",
-                onClick = onOpenPermissions,
+                icon = Icons24.Book,
+                title = "版本日志",
+                subtitle = if (logOpen) {
+                    "点击收起"
+                } else {
+                    "当前 v$version · 点击展开全部 ${Changelog.entries.size} 个版本"
+                },
+                onClick = { logOpen = !logOpen },
             )
+            Column(
+                modifier = Modifier.padding(start = 16.dp, end = 16.dp, bottom = 12.dp),
+            ) {
+                val shown = if (logOpen) {
+                    Changelog.entries
+                } else {
+                    Changelog.entries.take(Changelog.COLLAPSED_COUNT)
+                }
+                shown.forEach { ChangeLogBlock(it) }
+                if (!logOpen && Changelog.entries.size > Changelog.COLLAPSED_COUNT) {
+                    Text(
+                        text = "还有 ${Changelog.entries.size - Changelog.COLLAPSED_COUNT} 个版本，点上面展开",
+                        fontSize = 10.sp,
+                        color = Palette.weak,
+                        modifier = Modifier.padding(top = 2.dp),
+                    )
+                }
+            }
         }
 
         Spacer(Modifier.height(14.dp))
@@ -252,6 +293,36 @@ private fun MineRow(
             modifier = Modifier.size(18.dp),
             tint = if (enabled) Palette.line else Palette.bg,
         )
+    }
+}
+
+/** 一条版本记录：版本号 + 日期 + 几条简写 */
+@Composable
+private fun ChangeLogBlock(entry: ChangeEntry) {
+    Column(modifier = Modifier.padding(bottom = 10.dp)) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                text = "v${entry.versionName}",
+                fontSize = 12.sp,
+                fontWeight = FontWeight.Medium,
+                color = Palette.brand,
+            )
+            Text(
+                text = entry.date,
+                fontSize = 10.sp,
+                color = Palette.weak,
+                modifier = Modifier.padding(start = 6.dp),
+            )
+        }
+        entry.notes.forEach { note ->
+            Text(
+                text = "· $note",
+                fontSize = 11.sp,
+                color = Palette.sub,
+                lineHeight = 16.sp,
+                modifier = Modifier.padding(top = 3.dp),
+            )
+        }
     }
 }
 

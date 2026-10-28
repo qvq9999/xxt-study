@@ -1,8 +1,20 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
+    <!--
+      ⚠️ 这里的 statusBarColor / windowLightStatusBar 只对 **Android 14 及以下** 有效。
+
+      Android 15（API 35）起系统强制 edge-to-edge，这两个属性会被**完全忽略**
+      （不是"颜色不对"，是压根不读）。所以真正的图标明暗由运行时的
+      WindowCompat.getInsetsController().isAppearanceLightStatusBars 决定，
+      见 core/ui/Theme.kt 的 StudyTheme。
+
+      保留这些属性是为了低版本启动那一瞬间不闪白，别指望它们在新系统上生效。
+    -->
     <style name="Theme.StudyAssist" parent="android:Theme.Material.Light.NoActionBar">
         <item name="android:windowBackground">@color/bg</item>
         <item name="android:statusBarColor">@color/bg</item>
         <item name="android:navigationBarColor">@color/bg</item>
+        <!-- 浅灰背景 → 深色图标；低版本兜底，Android 15 上被忽略 -->
+        <item name="android:windowLightStatusBar">true</item>
     </style>
 </resources>

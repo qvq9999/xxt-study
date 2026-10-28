@@ -3,7 +3,11 @@ package com.xxt.study.core.update
 import android.content.Context
 import com.xxt.study.core.net.VerifyGate
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.channelFlow
+import kotlinx.coroutines.flow.firstOrNull
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import java.util.concurrent.TimeUnit
@@ -27,9 +31,10 @@ class UpdateChecker(private val context: Context) {
         .getSharedPreferences("update_state", Context.MODE_PRIVATE)
 
     private val client = OkHttpClient.Builder()
-        .connectTimeout(8, TimeUnit.SECONDS)
-        .readTimeout(10, TimeUnit.SECONDS)
-        .callTimeout(15, TimeUnit.SECONDS)
+        // 清单只有几百字节，不需要等 10 秒。超时短一点，挂掉的源能快点让路
+        .connectTimeout(4, TimeUnit.SECONDS)
+        .readTimeout(6, TimeUnit.SECONDS)
+        .callTimeout(7, TimeUnit.SECONDS)
         .retryOnConnectionFailure(true)
         .followRedirects(true)
         .build()
@@ -107,9 +112,25 @@ class UpdateChecker(private val context: Context) {
 
         if (!force && !shouldAutoCheck()) return@withContext Result.Skipped()
 
+        val routes = orderedRoutes()
         var lastError = "所有更新源都连不上"
 
-        for (route in UpdateSource.manifestRoutes()) {
+        /*
+         * 并发竞速，谁先拿到有效清单用谁。
+         *
+         * 原来是**串行**挨个试：3 个镜像 + 直连，每个最多等 15 秒 → 最坏 60 秒。
+         * 用户看到的就是"检查更新转半天"。现在同时发出去，第一个成功的立刻返回，
+         * 其余的随 flow 一起取消，正常情况 1~2 秒就出结果。
+         */
+        val raced = raceFirstValid(routes.take(RACE_COUNT))
+        if (raced != null) {
+            markChecked()
+            rememberOkSource(raced.first.name)
+            return@withContext decide(raced.second, me, force, raced.first.name)
+        }
+
+        // 竞速的那几个都失败：剩下的按顺序兜底（通常只剩直连 GitHub）
+        for (route in routes.drop(RACE_COUNT)) {
             val body = fetch(route.url)
             if (body == null) {
                 lastError = "${route.name} 连不上"
@@ -117,30 +138,71 @@ class UpdateChecker(private val context: Context) {
             }
             val manifest = UpdateManifest.parse(body)
             if (manifest == null) {
-                // 镜像有时会返回自己的 HTML 错误页/限流页，内容是 200 但不是 JSON
                 lastError = "${route.name} 返回的不是有效清单"
                 continue
             }
-
             markChecked()
-
-            if (manifest.versionCode <= me.code) return@withContext Result.UpToDate
-            if (!force && manifest.versionCode <= dismissedVersion()) return@withContext Result.UpToDate
-
-            return@withContext Result.Found(
-                UpdateAvailable(
-                    manifest = manifest,
-                    source = route.name,
-                    currentVersionCode = me.code,
-                    currentVersionName = me.name,
-                )
-            )
+            rememberOkSource(route.name)
+            return@withContext decide(manifest, me, force, route.name)
         }
 
-        // 失败也记账：否则镜像全挂时每次冷启动都要把 4 个源挨个超时一遍
+        // 失败也记账：否则镜像全挂时每次冷启动都要把几个源挨个超时一遍
         markChecked()
         Result.Failed(lastError)
     }
+
+    /** 拿到清单之后的判定：要不要更新 */
+    private fun decide(manifest: UpdateManifest, me: Local, force: Boolean, source: String): Result {
+        if (manifest.versionCode <= me.code) return Result.UpToDate
+        if (!force && manifest.versionCode <= dismissedVersion()) return Result.UpToDate
+        return Result.Found(
+            UpdateAvailable(
+                manifest = manifest,
+                source = source,
+                currentVersionCode = me.code,
+                currentVersionName = me.name,
+            )
+        )
+    }
+
+    /**
+     * 把源按"上次成功的排最前"重排。
+     *
+     * 实测 ghproxy.net 好使、ghfast.top 连不上，但用户的网络环境各不相同。
+     * 记住上一次是谁成功的，下次直接先试它——绝大多数情况下第一次就中，一次请求搞定。
+     */
+    private fun orderedRoutes(): List<UpdateSource.Route> {
+        val all = UpdateSource.manifestRoutes()
+        val last = lastOkSource() ?: return all
+        return all.sortedBy { if (it.name == last) 0 else 1 }
+    }
+
+    private fun lastOkSource(): String? =
+        prefs.getString(KEY_LAST_OK, null)?.takeIf { it.isNotBlank() }
+
+    private fun rememberOkSource(name: String) {
+        prefs.edit().putString(KEY_LAST_OK, name).apply()
+    }
+
+    /**
+     * 同时请求若干个源，返回**第一个**拿到有效清单的。
+     *
+     * 用 `channelFlow + firstOrNull` 的好处：一旦有人成功，整个 flow 就被取消，
+     * 剩下的请求跟着中止，不会有人在后台白等超时。
+     */
+    private suspend fun raceFirstValid(routes: List<UpdateSource.Route>): Pair<UpdateSource.Route, UpdateManifest>? =
+        withTimeoutOrNull(RACE_COUNT * 2L * 7_000L) {
+            channelFlow {
+                routes.forEach { route ->
+                    launch(Dispatchers.IO) {
+                        val manifest = runCatching {
+                            fetch(route.url)?.let { UpdateManifest.parse(it) }
+                        }.getOrNull()
+                        if (manifest != null) send(route to manifest)
+                    }
+                }
+            }.firstOrNull()
+        }
 
     private fun fetch(url: String): String? = runCatching {
         val req = Request.Builder()
@@ -161,5 +223,16 @@ class UpdateChecker(private val context: Context) {
         const val AUTO_INTERVAL_MS = 24 * 60 * 60 * 1000L
         const val KEY_LAST_CHECK = "last_check_at"
         const val KEY_DISMISSED = "dismissed_version_code"
+
+        /** 上次成功的源名；下次优先试它，一次请求就能出结果 */
+        const val KEY_LAST_OK = "last_ok_source"
+
+        /**
+         * 同时竞速的源个数。
+         *
+         * 取 2：镜像列表里前两个是最可能好使的，再多开只是浪费流量。
+         * 竞速失败才走剩下的串行兜底。
+         */
+        const val RACE_COUNT = 2
     }
 }

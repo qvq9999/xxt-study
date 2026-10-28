@@ -42,11 +42,10 @@ android {
         applicationId = "com.xxt.study"
         minSdk = 26
         targetSdk = 37
-        // 0.7.1：修「升级/隔一会儿打开就必弹风控」——撤回升级清缓存、保鲜期 12→30 分钟、
-        //        单次最多扫 12 门、撞上即熔断；并修「验证完还是用不了」（Cookie 同名覆盖）
+        // 0.8.0：深色模式（纯黑 OLED）+ 状态栏图标反色 + 作业列表单课刷新 + 优先扫本学期课程
         // versionCode 每次发布必须递增，否则覆盖安装会被拒，内置更新也会判成"没有新版"
-        versionCode = 19
-        versionName = "0.7.1"
+        versionCode = 20
+        versionName = "0.8.0"
     }
 
     buildTypes {

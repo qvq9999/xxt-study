@@ -1,5 +1,6 @@
 package com.xxt.study.feature.work
 
+import android.widget.Toast
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -13,32 +14,42 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.remember
+import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateMapOf
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.xxt.study.core.result.Cx
 import com.xxt.study.core.ui.Icons24
 import com.xxt.study.core.ui.Palette
 import com.xxt.study.core.ui.countdownText
 import com.xxt.study.core.ui.isUrgent
 import com.xxt.study.core.ui.rememberNow
+import com.xxt.study.data.repo.StudyRepo
 import com.xxt.study.domain.CourseDigest
 import com.xxt.study.domain.Work
 import com.xxt.study.domain.WorkView
 import com.xxt.study.domain.view
+import kotlinx.coroutines.launch
 
 /**
  * 作业列表。
@@ -48,7 +59,9 @@ import com.xxt.study.domain.view
 @Composable
 fun WorkListScreen(
     digest: CourseDigest,
+    repo: StudyRepo,
     onBack: () -> Unit,
+    onDigestUpdated: (CourseDigest) -> Unit,
     onOpenWork: (Work) -> Unit,
     onStartStudy: () -> Unit,
 ) {
@@ -58,6 +71,41 @@ fun WorkListScreen(
     val sorted = sortWorks(digest.works, now, closed)
     // 和「待提交」分组用同一个口径（含状态未确认的），否则头部数字和分组条数会对不上
     val openCount = digest.works.count { it.view(now, closed).countsAsTodo }
+
+    val ctx = LocalContext.current
+    val scope = rememberCoroutineScope()
+    var refreshing by remember(digest.key) { mutableStateOf(false) }
+
+    /*
+     * 刷新这门课的作业状态。
+     *
+     * 只重新拉这一门课（两跳导航、2 个请求），不是整页重扫——风控风险低得多。
+     * 数据层还有 10 秒硬节流兜底（StudyRepo.refreshCourse），
+     * 所以这里就算连点也不会真的连发请求。
+     */
+    fun refreshCourse() {
+        if (refreshing) return
+        refreshing = true
+        scope.launch {
+            try {
+                when (val r = repo.refreshCourse(digest.course)) {
+                    is Cx.Ok -> {
+                        onDigestUpdated(r.data)
+                        Toast.makeText(
+                            ctx,
+                            "已更新 ${r.data.works.size} 份作业",
+                            Toast.LENGTH_SHORT,
+                        ).show()
+                    }
+                    is Cx.Fail -> Toast.makeText(ctx, r.detail, Toast.LENGTH_LONG).show()
+                    Cx.NeedLogin -> Toast.makeText(ctx, "登录态失效，请重新登录", Toast.LENGTH_LONG).show()
+                }
+            } finally {
+                // 只在成功路径复位会让按钮永久转圈
+                refreshing = false
+            }
+        }
+    }
 
     Column(
         modifier = Modifier
@@ -105,6 +153,30 @@ fun WorkListScreen(
                     modifier = Modifier.padding(top = 2.dp),
                 )
             }
+            // 刷新这门课的作业状态：只重拉这一门，不整页重扫
+            Box(
+                modifier = Modifier
+                    .size(36.dp)
+                    .clip(RoundedCornerShape(10.dp))
+                    .clickable(enabled = !refreshing, onClick = { refreshCourse() }),
+                contentAlignment = Alignment.Center,
+            ) {
+                if (refreshing) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(16.dp),
+                        strokeWidth = 2.dp,
+                        color = Palette.brand,
+                    )
+                } else {
+                    Icon(
+                        imageVector = Icons24.Refresh,
+                        contentDescription = "刷新作业状态",
+                        modifier = Modifier.size(19.dp),
+                        tint = Palette.sub,
+                    )
+                }
+            }
+            Spacer(Modifier.width(6.dp))
             // 刷课入口放在课程页而不是首页：刷课是按课程跑的，先选中课程才谈得上刷
             Box(
                 modifier = Modifier

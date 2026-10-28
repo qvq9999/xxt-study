@@ -4,6 +4,7 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.ModalBottomSheet
 import androidx.activity.compose.BackHandler
+import android.webkit.ConsoleMessage
 import android.webkit.WebViewClient
 import android.webkit.WebResourceResponse
 import android.webkit.WebResourceRequest
@@ -82,6 +83,41 @@ private enum class Stage { Idle, Reading, Thinking, Filling, Done }
  */
 private const val REWRITE_TRIES = 2
 
+/** 页面里注入的"提交成功"信号前缀，见 [SUBMIT_WATCH] 与 WebChromeClient.onConsoleMessage */
+private const val TAG_SUBMITTED = "XXT_SUBMITTED"
+
+/**
+ * 提交成功探测器（注入到学习通作答页里跑）。
+ *
+ * 为什么用 MutationObserver 而不是只查一次：
+ * 学习通提交是 AJAX 局部刷新，页面不跳转，只把成功提示插进 DOM。
+ * 只查一次会在提示出现之前就放弃；监听 DOM 变化才能第一时间抓住。
+ *
+ * 命中后主动滚回顶部——提交按钮在页面最下方，而成功提示和得分在最上方，
+ * 不滚上去用户根本看不到（这就是"提交成功后显示太靠上看不全"）。
+ */
+private const val SUBMIT_WATCH = """
+(function(){
+  if (window.__xxtSubmitWatch) return;
+  window.__xxtSubmitWatch = true;
+  var re = /提交成功|作业已提交|已成功提交|提交完毕|已完成提交|已提交本次作业/;
+  function check(){
+    if (window.__xxtFired) return;
+    var t = document.body ? document.body.innerText : '';
+    if (re.test(t)) {
+      window.__xxtFired = true;
+      try { console.log('XXT_SUBMITTED'); } catch(e) {}
+    }
+  }
+  try {
+    new MutationObserver(check).observe(document.body, {
+      childList: true, subtree: true, characterData: true
+    });
+  } catch(e) {}
+  check();
+})()
+"""
+
 /**
  * 作业作答页。
  *
@@ -101,6 +137,19 @@ fun WorkAnswerScreen(
     var webView by remember { mutableStateOf<WebView?>(null) }
     var stage by remember { mutableStateOf(Stage.Idle) }
     var message by remember { mutableStateOf("页面加载完后点「AI 作答」") }
+
+    /*
+     * 用户在学习通页面里点了提交之后。
+     *
+     * 为什么需要这个状态：提交按钮在页面**底部**，而学习通的"提交成功"提示
+     * （以及得分/批阅状态）出现在页面**顶部**。用户点完提交，视口还停在底部，
+     * 抬头什么都看不到 —— 这就是"提交成功的显示太靠上看不全"。
+     *
+     * 检测到之后做三件事：滚回顶部、把底部的状态条收起来腾给网页、
+     * 顶部明确告诉他已经提交了。
+     */
+    var submitted by remember { mutableStateOf(false) }
+
     // 链接不合法就别去 loadUrl：加载空串只会得到一片白，用户看不出发生了什么
     val urlProblem = remember(work) {
         val u = work.detailUrl.trim()
@@ -397,9 +446,11 @@ fun WorkAnswerScreen(
                     maxLines = 1,
                 )
                 Text(
-                    text = work.rawLabel,
+                    // 提交之后把状态顶到标题下面，用户一眼就知道"已经交上去了"，
+                    // 不用再往下找那条被收起来的状态栏
+                    text = if (submitted) "✓ 作业已提交" else work.rawLabel,
                     fontSize = 11.sp,
-                    color = Palette.weak,
+                    color = if (submitted) Palette.ok else Palette.weak,
                     maxLines = 1,
                     modifier = Modifier.padding(top = 1.dp),
                 )
@@ -489,6 +540,14 @@ fun WorkAnswerScreen(
 
                             override fun onPageFinished(view: WebView?, url: String?) {
                                 loading = false
+                                /*
+                                 * 每页都挂一个"提交成功"观察器。
+                                 *
+                                 * 学习通的提交按钮在页面底部，点完是 AJAX 局部刷新（不跳页），
+                                 * 所以浏览器不会自动滚回顶部——而"提交成功"的提示和得分
+                                 * 都在页面最上面。不主动滚上去，用户点完提交抬头什么都看不到。
+                                 */
+                                view?.evaluateJavascript(SUBMIT_WATCH, null)
                             }
 
                             override fun onReceivedError(
@@ -539,6 +598,27 @@ fun WorkAnswerScreen(
                                 isUserGesture: Boolean,
                                 resultMsg: Message?,
                             ): Boolean = false
+
+                            /**
+                             * 接收页面里注入的"提交成功"信号。
+                             *
+                             * 用 console 回调而不是 addJavascriptInterface：
+                             * JsInterface 会把一个 Java 对象暴露给页面里所有脚本，
+                             * 而我们只需要一个单向的一次性事件，没必要开那么大口子。
+                             */
+                            override fun onConsoleMessage(msg: ConsoleMessage?): Boolean {
+                                val text = msg?.message().orEmpty()
+                                if (text.startsWith(TAG_SUBMITTED)) {
+                                    submitted = true
+                                    // 滚回顶部：提交结果、得分、批阅状态都在页面最上方
+                                    webView?.evaluateJavascript(
+                                        "window.scrollTo({top:0,behavior:'smooth'})",
+                                        null,
+                                    )
+                                }
+                                // 吞掉日志：页面自己的 console 输出对我们没意义
+                                return true
+                            }
                         }
 
                         if (urlProblem == null) loadUrl(work.detailUrl.trim())
@@ -612,46 +692,54 @@ fun WorkAnswerScreen(
             }
         }
 
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .background(Palette.card)
-                .padding(horizontal = 16.dp, vertical = 10.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-        ) {
-            Icon(
-                imageVector = if (stage == Stage.Done) Icons24.Check else Icons24.Alert,
-                contentDescription = null,
-                modifier = Modifier.size(15.dp),
-                tint = if (stage == Stage.Done) Palette.ok else Palette.weak,
-            )
-            Text(
-                text = message,
-                fontSize = 11.sp,
-                color = if (stage == Stage.Done) Palette.ok else Palette.sub,
-                lineHeight = 16.sp,
-                modifier = Modifier.weight(1f),
-            )
-            // 换模型不用退回设置页
-            Box(
+        /*
+         * 提交之后的底部状态条：整条让位给网页。
+         *
+         * 交完作业用户要看的是页面顶部的"提交成功 / 得分 / 批阅状态"，
+         * 这时候还占着 40dp 显示"核对后请自己点提交"纯属挡路。
+         * 状态已经挪到标题下面那行（✓ 作业已提交）。
+         */
+        if (!submitted) {
+            Row(
                 modifier = Modifier
-                    .clip(RoundedCornerShape(8.dp))
-                    .background(Palette.bg)
-                    .clickable { showAiSwitch = true }
-                    .padding(horizontal = 8.dp, vertical = 5.dp),
+                    .fillMaxWidth()
+                    .background(Palette.card)
+                    .padding(horizontal = 16.dp, vertical = 10.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
             ) {
-                Text(
-                    text = "AI · $activeLabel",
-                    fontSize = 10.sp,
-                    color = if (savedModels.isEmpty()) Palette.weak else Palette.sub,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                    modifier = Modifier.widthIn(max = 132.dp),
+                Icon(
+                    imageVector = if (stage == Stage.Done) Icons24.Check else Icons24.Alert,
+                    contentDescription = null,
+                    modifier = Modifier.size(15.dp),
+                    tint = if (stage == Stage.Done) Palette.ok else Palette.weak,
                 )
+                Text(
+                    text = message,
+                    fontSize = 11.sp,
+                    color = if (stage == Stage.Done) Palette.ok else Palette.sub,
+                    lineHeight = 16.sp,
+                    modifier = Modifier.weight(1f),
+                )
+                // 换模型不用退回设置页
+                Box(
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(8.dp))
+                        .background(Palette.bg)
+                        .clickable { showAiSwitch = true }
+                        .padding(horizontal = 8.dp, vertical = 5.dp),
+                ) {
+                    Text(
+                        text = "AI · $activeLabel",
+                        fontSize = 10.sp,
+                        color = if (savedModels.isEmpty()) Palette.weak else Palette.sub,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.widthIn(max = 132.dp),
+                    )
+                }
             }
         }
-        Spacer(Modifier.height(0.dp))
     }
 
     if (sheetOpen) {

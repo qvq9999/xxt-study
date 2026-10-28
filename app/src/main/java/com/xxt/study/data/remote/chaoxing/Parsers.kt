@@ -202,6 +202,8 @@ object Parsers {
                         cpi = cpi,
                         name = cleanName(name),
                         closed = contentClosed || courseObj.int("coursestate") == 1,
+                        // 创建时间：扫描优先级就靠它（学习通没有"最近访问"字段）
+                        createdAt = courseObj.long("createtime"),
                     )
                 }
             }
@@ -251,6 +253,12 @@ object Parsers {
     private fun JsonObject.int(key: String): Int? {
         val v = this[key] as? JsonPrimitive ?: return null
         return v.content.trim().toIntOrNull()
+    }
+
+    /** 取长整数（时间戳）；缺失返回 0，排序时自然排到最后 */
+    private fun JsonObject.long(key: String): Long {
+        val v = this[key] as? JsonPrimitive ?: return 0L
+        return v.content.trim().toLongOrNull()?.takeIf { it > 0 } ?: 0L
     }
 
     /** 兜底源：courselistdata 的 HTML，从链接里抄四要素 */

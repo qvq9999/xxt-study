@@ -22,6 +22,16 @@ data class Course(
      * 这是"已结课仍显示未完成作业"的直接修法。
      */
     val closed: Boolean = false,
+    /**
+     * 课程创建时间（epoch 毫秒），来自 `course.data[0].createtime`。
+     *
+     * 用来决定**先扫哪几门**。学习通不给"最近访问时间"（41 门样本里翻遍了，
+     * 只有这一个时间字段；`cataName` 全是"课程"、`norder` 只是用户拖拽排序），
+     * 所以"新开的课"是现有数据里最好的近似。
+     *
+     * 0 表示未知（旧缓存或字段缺失），排序时排在后面。
+     */
+    val createdAt: Long = 0L,
 )
 
 /**

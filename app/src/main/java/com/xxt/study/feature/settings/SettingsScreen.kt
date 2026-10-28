@@ -29,10 +29,12 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.xxt.study.core.ai.AiClient
 import com.xxt.study.core.ai.AiProviders
 import com.xxt.study.core.result.Cx
 import com.xxt.study.core.study.StudyLimits
+import com.xxt.study.core.study.ThemeMode
 import com.xxt.study.core.study.StudySettings
 import com.xxt.study.core.ui.Palette
 import kotlinx.coroutines.launch
@@ -68,6 +70,9 @@ fun SettingsScreen(
 
     var autoQuiz by remember { mutableStateOf(settings.autoQuiz) }
 
+    // 主题：切了要整屏立刻变，不能等重启，所以跟着 StateFlow 走
+    val themeMode by settings.theme.collectAsStateWithLifecycle()
+
     // 已保存的服务：读密钥库，用版本号缓存；保存/切换后 +1 让列表重算
     var savedTick by remember { mutableStateOf(0) }
     val savedServices = remember(savedTick) { ai.savedProviders() }
@@ -90,6 +95,30 @@ fun SettingsScreen(
                 .verticalScroll(rememberScrollState())
                 .padding(horizontal = 20.dp, vertical = 4.dp),
         ) {
+            SettingsCard(title = "外观") {
+                Text(
+                    text = "深色模式的背景是纯黑（#000000）：OLED 屏幕上这些像素完全不发光，" +
+                        "也最省电。文字刻意用近白而不是纯白，纯白压在纯黑上会起光晕。",
+                    fontSize = 11.sp,
+                    color = Palette.weak,
+                    lineHeight = 16.sp,
+                )
+                Spacer(Modifier.height(10.dp))
+                ChipFlow {
+                    ThemeMode.entries.forEach { mode ->
+                        SelectChip(
+                            text = when (mode) {
+                                ThemeMode.SYSTEM -> "跟随系统"
+                                ThemeMode.LIGHT -> "浅色"
+                                ThemeMode.DARK -> "深色（纯黑）"
+                            },
+                            selected = themeMode == mode,
+                            onClick = { settings.setTheme(mode) },
+                        )
+                    }
+                }
+            }
+
             SettingsCard(title = "AI 答题接口") {
                 Text("服务商", fontSize = 12.sp, color = Palette.sub)
                 Spacer(Modifier.height(8.dp))

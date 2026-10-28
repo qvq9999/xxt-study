@@ -6,6 +6,7 @@ import com.xxt.study.core.result.Cx
 import com.xxt.study.data.local.SnapshotCache
 import com.xxt.study.data.remote.chaoxing.ChaoxingClient
 import com.xxt.study.data.remote.web.WebWorkFetcher
+import com.xxt.study.domain.Course
 import com.xxt.study.domain.CourseDigest
 import com.xxt.study.domain.Session
 import com.xxt.study.domain.Snapshot
@@ -30,9 +31,74 @@ class StudyRepo(
     private val cookies: CookieStore,
 ) {
 
+    /** 上一次单门课手动刷新的时间，用来做连点保护（见 [refreshCourse]） */
+    @Volatile
+    private var lastCourseRefreshAt = 0L
+
     suspend fun session(): Cx<Session> = client.checkSession()
 
     fun cached(): Snapshot? = cache.load()
+
+    /**
+     * 刷新**单门课**的作业列表（课程页那个刷新键用）。
+     *
+     * ## 为什么这个不会触发风控
+     *
+     * 一门课只有两跳导航（课程中间页 + 作业列表），共 2 个请求，
+     * 和"一次扫 12 门 = 24 个请求"完全不是一个量级。
+     *
+     * 但它最容易被连点——用户看状态没变就反复戳。所以这里做**硬节流**：
+     * [COURSE_REFRESH_GAP_MS] 之内直接拒绝，不发任何请求。
+     * 挡在数据层而不是只靠界面禁用，是因为界面状态可能被重建（旋转、切页）。
+     */
+    suspend fun refreshCourse(course: Course): Cx<CourseDigest> {
+        VerifyGate.cooldownText()?.let { return Cx.Fail(Cx.Kind.VERIFY, it) }
+
+        val now = System.currentTimeMillis()
+        val gap = now - lastCourseRefreshAt
+        if (gap in 0 until COURSE_REFRESH_GAP_MS) {
+            val wait = (COURSE_REFRESH_GAP_MS - gap + 999) / 1000
+            return Cx.Fail(Cx.Kind.RATE_LIMITED, "${wait} 秒内刚刷过，稍等一下再点（避免触发风控）")
+        }
+        lastCourseRefreshAt = now
+
+        return when (val r = webFetcher.fetch(course)) {
+            is Cx.Ok -> {
+                val todo = r.data.count { it.isActionable(now, course.closed) }
+                val digest = CourseDigest(course, todo, r.data, null, at = now)
+                mergeIntoSnapshot(digest)
+                Cx.Ok(digest)
+            }
+            is Cx.Fail -> r
+            Cx.NeedLogin -> Cx.NeedLogin
+        }
+    }
+
+    /**
+     * 把单门课的新结果合并回整份快照。
+     *
+     * 这样首页那个大数字也会跟着变——用户在课程页刷完一看，退回去数字是对的，
+     * 不用再整页重扫一遍。
+     */
+    private fun mergeIntoSnapshot(digest: CourseDigest) {
+        val old = cache.load()
+            ?: Snapshot(System.currentTimeMillis(), 0, emptyList())
+        val exists = old.courses.any { it.key == digest.key }
+        val courses = if (exists) {
+            old.courses.map { if (it.key == digest.key) digest else it }
+        } else {
+            old.courses + digest
+        }
+        cache.save(
+            old.copy(
+                at = System.currentTimeMillis(),
+                totalTodo = courses.sumOf { it.todoCount },
+                courses = courses.sortedWith(
+                    compareByDescending<CourseDigest> { it.todoCount }.thenBy { it.course.name },
+                ),
+            ),
+        )
+    }
 
     fun loggedIn(): Boolean = cookies.loggedIn()
 
@@ -112,13 +178,22 @@ class StudyRepo(
         /*
          * 限流：单次最多真取 maxCoursesPerScan 门。
          *
-         * 排序按"上次成功时间"升序——最久没更新的先扫，保证轮转公平，
-         * 不会出现"每次都是前 12 门最新，后面 29 门永远停在三天前"。
+         * 排序三条，依次是：
+         * 1. **未结课优先**——结课课程的后补交通道已经关了，不可能有要交的作业；
+         * 2. **创建时间降序**——学习通只给得出 `createtime`，没有"最近访问"，
+         *    所以"新开的课"是现有数据里对"近期有作业"最好的近似。
+         *    实测 41 门课按这个排，前 12 门全是本学期的，2022~2024 的旧课自动沉底；
+         * 3. **上次成功时间升序**——同一批里最久没更新的先扫，保证轮转公平，
+         *    不会出现"永远是前 12 门最新、后面 29 门停在三天前"。
          */
         val toFetch = if (force || pending.size <= maxCoursesPerScan) {
             pending
         } else {
-            pending.sortedBy { previous["${it.courseId}:${it.classId}"]?.at ?: 0L }.take(maxCoursesPerScan)
+            pending.sortedWith(
+                compareBy<Course> { if (it.closed) 1 else 0 }
+                    .thenByDescending { it.createdAt }
+                    .thenBy { previous["${it.courseId}:${it.classId}"]?.at ?: 0L },
+            ).take(maxCoursesPerScan)
         }
         val deferred = pending.size - toFetch.size
 
@@ -259,5 +334,14 @@ class StudyRepo(
          * 41 门全扫则几乎必被拦。没扫到的课保留旧数据，下次按"最久没更新"轮转。
          */
         const val DEFAULT_MAX_PER_SCAN = 12
+
+        /**
+         * 单门课刷新的最小间隔。
+         *
+         * 10 秒看起来有点长，但这门课刷一次就是 2 个真实页面请求；
+         * 用户看状态没变时会连续戳，10 次就是 20 个请求 —— 足够把风控惹出来。
+         * 宁可让他等 10 秒，也不要他被验证码拦住 5 分钟。
+         */
+        const val COURSE_REFRESH_GAP_MS = 10_000L
     }
 }

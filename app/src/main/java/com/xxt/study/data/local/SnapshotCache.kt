@@ -84,9 +84,16 @@ class SnapshotCache(context: Context) {
          * 用户升级后第一次打开会全量重扫，所以不会长期停在错误值上。
          */
         val closed: Boolean = false,
+        /**
+         * 课程创建时间，决定"先扫哪几门"。
+         *
+         * 旧缓存没有这个字段 → 默认 0 → 排序时排到后面，
+         * 下次刷新拿到课程列表就补上了（课程列表每次都会重新拉，不依赖这个缓存）。
+         */
+        val createdAt: Long = 0L,
     ) {
         fun toDomain() = CourseDigest(
-            course = Course(courseId, classId, cpi, name, closed),
+            course = Course(courseId, classId, cpi, name, closed, createdAt),
             todoCount = todo,
             works = works.map { it.toDomain() },
             error = error,
@@ -104,6 +111,7 @@ class SnapshotCache(context: Context) {
                 at = d.at,
                 works = d.works.map { WorkDto.from(it) },
                 closed = d.course.closed,
+                createdAt = d.course.createdAt,
             )
         }
     }

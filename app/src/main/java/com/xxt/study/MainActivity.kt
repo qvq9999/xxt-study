@@ -4,6 +4,7 @@ import android.Manifest
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.graphics.drawable.ColorDrawable
 import android.os.Build
 import android.os.Bundle
 import android.widget.Toast
@@ -13,10 +14,12 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
+import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -29,6 +32,7 @@ import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.ui.Modifier
 import com.xxt.study.core.net.VerifyGate
+import com.xxt.study.core.study.ThemeMode
 import com.xxt.study.core.ui.Palette
 import com.xxt.study.core.ui.StudyTheme
 import com.xxt.study.core.result.Cx
@@ -73,7 +77,22 @@ class MainActivity : ComponentActivity() {
         handleIntent(intent)
 
         setContent {
-            StudyTheme {
+            // 主题：跟随系统 / 强制浅色 / 强制深色（深色背景是纯黑，OLED 关像素）
+            val themeMode by container.settings.theme.collectAsStateWithLifecycle()
+            val dark = themeMode.resolveDark(isSystemInDarkTheme())
+
+            /*
+             * 窗口背景也跟着走。
+             *
+             * 内容还没绘制出来的那一瞬间（冷启动、Activity 重建），
+             * 状态栏区露出的是 Window 背景而不是我们的 Box；
+             * 不设的话深色模式会闪一下浅灰，纯黑就没意义了。
+             */
+            SideEffect {
+                window.setBackgroundDrawable(ColorDrawable(if (dark) DARK_BG else LIGHT_BG))
+            }
+
+            StudyTheme(dark = dark) {
                 val activityContext = LocalContext.current
                 // 页面不多，用状态变量管路由就够，不引导航库。
                 // 层级：登录 → 主壳（底部 tab：课程 / 我的）→ 课程列表 → 作业作答 / 刷课；
@@ -268,7 +287,10 @@ class MainActivity : ComponentActivity() {
 
                         openCourse != null -> WorkListScreen(
                             digest = openCourse!!,
+                            repo = container.repo,
                             onBack = { openCourse = null },
+                            // 单课刷新后把新结果顶回状态，页面和首页数字一起更新
+                            onDigestUpdated = { openCourse = it },
                             onOpenWork = { answerWork = it },
                             onStartStudy = { studyCourse = openCourse!!.course },
                         )
@@ -365,6 +387,10 @@ class MainActivity : ComponentActivity() {
 
         /** 权限引导只在首次启动自动走一遍，之后从「我的 → 权限」进 */
         const val KEY_PERM_PROMPTED = "perm_prompted"
+
+        /** 窗口背景色：和 Palette.bg 保持一致，避免内容绘制前闪一下 */
+        const val LIGHT_BG = 0xFFF5F6F8.toInt()
+        const val DARK_BG = 0xFF000000.toInt()
     }
 }
 
