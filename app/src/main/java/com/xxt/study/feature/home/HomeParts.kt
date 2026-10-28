@@ -1,7 +1,9 @@
 package com.xxt.study.feature.home
 
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -9,6 +11,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -153,6 +156,7 @@ internal fun ReloginBanner(onClick: () -> Unit) {
     }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 internal fun CourseRow(
     digest: CourseDigest,
@@ -160,24 +164,51 @@ internal fun CourseRow(
     actionable: Int,
     /** 未交但已过截止的份数，用来区分「已清」和「已截止」 */
     expired: Int,
+    /** 是否已置顶（长按切换） */
+    pinned: Boolean,
+    /** 这一门正在单独刷新 */
+    refreshing: Boolean,
+    /** 刷新结果文案，3 秒后由 VM 自动清掉 */
+    note: CourseNote?,
     onClick: () -> Unit,
+    onLongClick: () -> Unit,
+    onRefresh: () -> Unit,
 ) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
             .clip(RoundedCornerShape(14.dp))
             .background(Palette.card)
-            .clickable(onClick = onClick)
-            .padding(horizontal = 14.dp, vertical = 14.dp),
+            // 长按置顶：不用多一个按钮占地方，也不容易误触（列表行本来就只点不拖）
+            .combinedClickable(onClick = onClick, onLongClick = onLongClick)
+            .padding(start = 14.dp, end = 6.dp, top = 12.dp, bottom = 12.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Column(modifier = Modifier.weight(1f)) {
-            Text(
-                text = digest.course.name.ifBlank { "未命名课程" },
-                fontSize = 14.sp,
-                fontWeight = FontWeight.Medium,
-                color = Palette.ink,
-            )
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                if (pinned) {
+                    // 置顶标识：一个"钉"字小标签，比图标更好认，也不占宽度
+                    Text(
+                        text = "置顶",
+                        fontSize = 9.sp,
+                        fontWeight = FontWeight.Medium,
+                        color = Palette.brand,
+                        modifier = Modifier
+                            .padding(end = 6.dp)
+                            .clip(RoundedCornerShape(4.dp))
+                            .background(Palette.brandSoft)
+                            .padding(horizontal = 4.dp, vertical = 1.dp),
+                    )
+                }
+                Text(
+                    text = digest.course.name.ifBlank { "未命名课程" },
+                    fontSize = 14.sp,
+                    fontWeight = FontWeight.Medium,
+                    color = Palette.ink,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
             Text(
                 text = if (digest.ok) {
                     val base = if (digest.works.isEmpty()) "暂无作业" else "共 ${digest.works.size} 份作业"
@@ -190,17 +221,52 @@ internal fun CourseRow(
                 color = if (digest.ok) Palette.weak else Palette.alarm,
                 modifier = Modifier.padding(top = 3.dp),
             )
+            // 刷新反馈就地显示在课程名下：不用 Toast 也不打断操作
+            if (note != null) {
+                Text(
+                    text = note.text,
+                    fontSize = 10.sp,
+                    color = if (note.ok) Palette.ok else Palette.alarm,
+                    lineHeight = 14.sp,
+                    modifier = Modifier.padding(top = 2.dp),
+                )
+            }
         }
 
         if (digest.ok) {
             CountChip(actionable, expired, digest.course.closed)
-            Icon(
-                imageVector = Icons24.ChevronRight,
-                contentDescription = null,
-                modifier = Modifier.size(20.dp),
-                tint = Palette.weak,
-            )
         }
+
+        // 独立刷新键：只刷这一门（2 个请求），转圈时不可点
+        Box(
+            modifier = Modifier
+                .size(36.dp)
+                .clip(RoundedCornerShape(9.dp))
+                .clickable(enabled = !refreshing, onClick = onRefresh),
+            contentAlignment = Alignment.Center,
+        ) {
+            if (refreshing) {
+                CircularProgressIndicator(
+                    modifier = Modifier.size(14.dp),
+                    strokeWidth = 1.6.dp,
+                    color = Palette.brand,
+                )
+            } else {
+                Icon(
+                    imageVector = Icons24.Refresh,
+                    contentDescription = "刷新这门课的作业",
+                    modifier = Modifier.size(17.dp),
+                    tint = Palette.weak,
+                )
+            }
+        }
+
+        Icon(
+            imageVector = Icons24.ChevronRight,
+            contentDescription = null,
+            modifier = Modifier.size(18.dp),
+            tint = Palette.line,
+        )
     }
 }
 

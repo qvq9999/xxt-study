@@ -1,6 +1,7 @@
 package com.xxt.study.feature.work
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -15,6 +16,10 @@ import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -217,31 +222,72 @@ internal fun AiAnswerModal(
             }
         }
 
-        // ---------- 思考过程 ----------
+        // ---------- 思考过程（默认折叠）----------
+        /*
+         * 默认**收起来**：思考过程动辄上千字，一展开就把答案挤到看不见的地方，
+         * 而用户打开这个窗口第一眼要看的恰恰是答案。需要时再点开。
+         *
+         * 折叠状态用 remember 存在弹窗内部：同一次打开里换成"重新生成"也不会自己弹开，
+         * 每次重新打开弹窗回到默认的折叠态。
+         */
+        var thinkingOpen by remember { mutableStateOf(false) }
         Spacer(Modifier.height(12.dp))
-        SectionTitle("思考过程")
-        when {
-            reasoning != null -> Text(
-                text = reasoning,
-                fontSize = 11.sp,
-                color = Palette.weak,
-                lineHeight = 17.sp,
-                modifier = Modifier.padding(top = 2.dp),
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(8.dp))
+                .clickable { thinkingOpen = !thinkingOpen }
+                .padding(vertical = 2.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                text = "思考过程",
+                fontSize = 12.sp,
+                fontWeight = FontWeight.Medium,
+                color = Palette.sub,
             )
-            generating -> Text(
-                text = "模型正在生成，返回后这里会显示它的推理内容（部分模型不提供）。",
-                fontSize = 11.sp,
+            Text(
+                text = when {
+                    reasoning != null -> "（${reasoning.length} 字）"
+                    generating -> "（生成中）"
+                    else -> "（无）"
+                },
+                fontSize = 10.sp,
                 color = Palette.weak,
-                lineHeight = 17.sp,
-                modifier = Modifier.padding(top = 2.dp),
+                modifier = Modifier.padding(start = 4.dp),
             )
-            else -> Text(
-                text = "这次没有返回思考内容（多数模型只在请求里带 reasoning 时才给）。",
-                fontSize = 11.sp,
-                color = Palette.weak,
-                lineHeight = 17.sp,
-                modifier = Modifier.padding(top = 2.dp),
+            Spacer(Modifier.weight(1f))
+            Text(
+                text = if (thinkingOpen) "收起" else "展开",
+                fontSize = 10.sp,
+                color = Palette.brand,
             )
+        }
+        if (thinkingOpen) {
+            when {
+                reasoning != null -> Text(
+                    // 不截断：思考内容整段给出来，长了由弹窗自己滚
+                    text = reasoning,
+                    fontSize = 11.sp,
+                    color = Palette.weak,
+                    lineHeight = 17.sp,
+                    modifier = Modifier.padding(top = 4.dp),
+                )
+                generating -> Text(
+                    text = "模型正在生成，返回后这里会显示它的推理内容（部分模型不提供）。",
+                    fontSize = 11.sp,
+                    color = Palette.weak,
+                    lineHeight = 17.sp,
+                    modifier = Modifier.padding(top = 4.dp),
+                )
+                else -> Text(
+                    text = "这次没有返回思考内容（多数模型只在请求里带 reasoning 时才给）。",
+                    fontSize = 11.sp,
+                    color = Palette.weak,
+                    lineHeight = 17.sp,
+                    modifier = Modifier.padding(top = 4.dp),
+                )
+            }
         }
 
         // ---------- 逐题结果（答案区）----------

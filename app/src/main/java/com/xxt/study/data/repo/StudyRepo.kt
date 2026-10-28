@@ -12,6 +12,7 @@ import com.xxt.study.domain.Session
 import com.xxt.study.domain.Snapshot
 import com.xxt.study.domain.Work
 import com.xxt.study.domain.isActionable
+import com.xxt.study.domain.key
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
@@ -31,9 +32,29 @@ class StudyRepo(
     private val cookies: CookieStore,
 ) {
 
-    /** 上一次单门课手动刷新的时间，用来做连点保护（见 [refreshCourse]） */
-    @Volatile
-    private var lastCourseRefreshAt = 0L
+    /**
+     * 每门课各自的上次刷新时间（key = `courseId:classId`）。
+     *
+     * 以前是**一个全局时间戳**，结果在首页给 A 课点了刷新之后，
+     * 10 秒内给 B 课点也会被拒——两门不相干的课被互相牵连，用户只会觉得"按钮坏了"。
+     * 节流的意义是防连点同一门，按课分开才符合直觉。
+     */
+    private val lastCourseRefreshAt = java.util.concurrent.ConcurrentHashMap<String, Long>()
+
+    /**
+     * 快照版本号：**任何**改动缓存的路径（整页刷新 / 单课刷新 / 登出清缓存）都 +1。
+     *
+     * 界面侧（首页）订阅它，一有变化就重读缓存。
+     * 这是"课程页刷新后首页数字必须跟着变"的唯一可靠做法——
+     * 首页的 StateFlow 里存的是当初那份 Snapshot 对象的拷贝，
+     * 不重新读，它就永远停在旧数字上。
+     */
+    private val _revision = kotlinx.coroutines.flow.MutableStateFlow(0L)
+    val revision: kotlinx.coroutines.flow.StateFlow<Long> = _revision
+
+    private fun bumpRevision() {
+        _revision.value = _revision.value + 1
+    }
 
     suspend fun session(): Cx<Session> = client.checkSession()
 
@@ -55,12 +76,13 @@ class StudyRepo(
         VerifyGate.cooldownText()?.let { return Cx.Fail(Cx.Kind.VERIFY, it) }
 
         val now = System.currentTimeMillis()
-        val gap = now - lastCourseRefreshAt
+        val key = course.key
+        val gap = now - (lastCourseRefreshAt[key] ?: 0L)
         if (gap in 0 until COURSE_REFRESH_GAP_MS) {
             val wait = (COURSE_REFRESH_GAP_MS - gap + 999) / 1000
-            return Cx.Fail(Cx.Kind.RATE_LIMITED, "${wait} 秒内刚刷过，稍等一下再点（避免触发风控）")
+            return Cx.Fail(Cx.Kind.RATE_LIMITED, "这门课 ${wait} 秒内刚刷过，稍等一下再点（避免触发风控）")
         }
-        lastCourseRefreshAt = now
+        lastCourseRefreshAt[key] = now
 
         return when (val r = webFetcher.fetch(course)) {
             is Cx.Ok -> {
@@ -98,6 +120,8 @@ class StudyRepo(
                 ),
             ),
         )
+        // 单课刷新也改了缓存，通知界面重读
+        bumpRevision()
     }
 
     fun loggedIn(): Boolean = cookies.loggedIn()
@@ -105,6 +129,7 @@ class StudyRepo(
     fun logout() {
         cookies.clear()
         cache.clear()
+        bumpRevision()
         // 隐藏 WebView 自带一份 Cookie，只清自己的不够——不清就会出现
         // "登出后换个账号，看到的还是上一个人的作业"
         webFetcher.clearCookies()
@@ -311,6 +336,7 @@ class StudyRepo(
             ),
         )
         cache.save(snapshot)
+        bumpRevision()
         return Cx.Ok(snapshot)
     }
 

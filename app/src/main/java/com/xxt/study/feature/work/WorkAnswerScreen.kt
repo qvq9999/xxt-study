@@ -496,7 +496,7 @@ fun WorkAnswerScreen(
             phase = "AI 没给出可用答案"
             message = "AI 没给出可用答案，检查模型是否可用"
             rows = planned.map { (no, q, solved) ->
-                AnswerRow(no, q.typeLabel.ifBlank { typeName(q.type) }, q.stem.take(80),
+                AnswerRow(no, q.typeLabel.ifBlank { typeName(q.type) }, q.stem,
                     solved?.note ?: "无答案", false)
             }
             return -1
@@ -537,7 +537,8 @@ fun WorkAnswerScreen(
             AnswerRow(
                 number = no,
                 typeLabel = q.typeLabel.ifBlank { typeName(q.type) },
-                stem = q.stem.take(80),
+                // 不截断题干与答案：弹窗里本来就滚得动，截断只会让人看不到全貌
+                stem = q.stem,
                 answer = readable(q, value, solved?.note) + (lenNote ?: ""),
                 ok = ok,
             )
@@ -1350,13 +1351,18 @@ private fun lengthScore(text: String, rule: LengthRule): Int {
     return if (rule.fits(text)) Int.MAX_VALUE else LengthRules.count(text)
 }
 
-/** 把提交值翻译成人话，方便核对 */
+/**
+ * 把提交值翻译成人话，方便核对。
+ *
+ * 这里**不做截断**。之前简答/填空只给前 60 字，用户想核对第 3 段写了什么就得去网页里翻；
+ * 现在整段给出来，长了由弹窗滚动——"看得全"比"行矮"重要。
+ */
 private fun readable(q: Question, value: String?, note: String?): String {
     if (value == null) return note ?: "无答案"
     return when (q.type) {
         QType.SINGLE, QType.MULTIPLE -> value
         QType.JUDGE -> if (value == "true") "对" else "错"
-        else -> value.take(60)
+        else -> value
     }
 }
 

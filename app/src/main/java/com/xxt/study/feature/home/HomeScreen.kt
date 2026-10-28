@@ -58,6 +58,8 @@ fun HomeScreen(
     vm: HomeViewModel = viewModel(),
 ) {
     val state by vm.state.collectAsStateWithLifecycle()
+    // 置顶集合来自 StudySettings 的 StateFlow：长按置顶后立刻重排，重进 App 也还在
+    val pinnedKeys by vm.pinned.collectAsStateWithLifecycle()
     val context = LocalContext.current
     var query by remember { mutableStateOf("") }
     // 红点要能"自己消失"：跨过截止时间后不需要重新扫描，下一拍统计就变
@@ -136,8 +138,9 @@ fun HomeScreen(
 
         val courses = snapshot?.courses.orEmpty()
         // 搜索只在内存里过滤，不发请求：41 门课全在手上，没必要往返
-        val shown = remember(courses, query) {
-            if (query.isBlank()) courses else courses.filter { fuzzyMatch(it.course.name, query) }
+        val shown = remember(courses, query, pinnedKeys) {
+            val hit = if (query.isBlank()) courses else courses.filter { fuzzyMatch(it.course.name, query) }
+            orderCourses(hit, pinnedKeys)
         }
         // 没有可交作业的课（全过期 / 全完成 / 本来就没作业）归档折叠，
         // 免得上学期的课把正在上的课挤下去
@@ -181,17 +184,95 @@ fun HomeScreen(
                 contentPadding = PaddingValues(start = 20.dp, end = 20.dp, top = 4.dp, bottom = 24.dp),
                 verticalArrangement = Arrangement.spacedBy(8.dp),
             ) {
-                val active = shown.filter { actionableOf(it) > 0 }
-                val archived = shown.filter { actionableOf(it) <= 0 }
+                /*
+                 * 置顶课程单独一组排最前，且**不参与"有代办/归档"的划分**。
+                 *
+                 * 否则一门已结课、没有待办的课被置顶后反而会掉进"暂无待办"折叠区里，
+                 * 用户长按置顶却看不到它在上面，只会以为没生效。
+                 */
+                val pinnedCourses = shown.filter { it.key in pinnedKeys }
+                val rest = shown.filterNot { it.key in pinnedKeys }
+                val active = rest.filter { actionableOf(it) > 0 }
+                val archived = rest.filter { actionableOf(it) <= 0 }
 
-                items(active, key = { "${it.course.courseId}:${it.course.classId}" }) { digest ->
-                    CourseRow(digest, actionableOf(digest), expiredOf(digest)) {
-                        if (digest.ok) {
-                            onOpenCourse(digest)
-                        } else {
-                            Toast.makeText(context, digest.error ?: "这门课暂时取不到", Toast.LENGTH_SHORT).show()
+                item(key = "pinned-header") {
+                    if (pinnedCourses.isNotEmpty()) {
+                        Text(
+                            text = "置顶 · ${pinnedCourses.size} 门",
+                            fontSize = 11.sp,
+                            color = Palette.weak,
+                            modifier = Modifier.padding(start = 2.dp, top = 2.dp),
+                        )
+                    }
+                }
+
+                items(pinnedCourses, key = { "${it.course.courseId}:${it.course.classId}" }) { digest ->
+                    CourseItem(
+                        digest = digest,
+                        pinned = true,
+                        actionable = actionableOf(digest),
+                        expired = expiredOf(digest),
+                        refreshing = "${'$'}{digest.key}" in state.refreshingCourses,
+                        note = state.courseNotes[digest.key],
+                        onOpen = {
+                            if (digest.ok) {
+                                onOpenCourse(it)
+                            } else {
+                                Toast.makeText(context, digest.error ?: "这门课暂时取不到", Toast.LENGTH_SHORT).show()
+                            }
+                        },
+                        onTogglePin = { key ->
+                            // 长按没有视觉即时反馈，给一句话确认；置顶标识会跟着列表一起变
+                            val nowPinned = vm.togglePin(key)
+                            Toast.makeText(
+                                context,
+                                if (nowPinned) "已置顶「${digest.course.name}」" else "已取消置顶",
+                                Toast.LENGTH_SHORT,
+                            ).show()
+                        },
+                        onRefresh = { d -> vm.refreshCourse(d.course) },
+                    )
+                }
+
+                if (active.isNotEmpty()) {
+                    item(key = "active-header") {
+                        if (pinnedCourses.isNotEmpty()) {
+                            Text(
+                                text = "其他课程",
+                                fontSize = 11.sp,
+                                color = Palette.weak,
+                                modifier = Modifier.padding(start = 2.dp, top = 6.dp),
+                            )
                         }
                     }
+                }
+
+                items(active, key = { "${it.course.courseId}:${it.course.classId}" }) { digest ->
+                    CourseItem(
+                        digest = digest,
+                        pinned = false,
+                        actionable = actionableOf(digest),
+                        expired = expiredOf(digest),
+                        refreshing = "${'$'}{digest.key}" in state.refreshingCourses,
+                        note = state.courseNotes[digest.key],
+                        onOpen = {
+                            if (digest.ok) {
+                                onOpenCourse(it)
+                            } else {
+                                Toast.makeText(context, digest.error ?: "这门课暂时取不到", Toast.LENGTH_SHORT).show()
+                            }
+                        },
+                        onTogglePin = { key ->
+                            // 长按没有视觉即时反馈，给一句话确认；置顶标识会跟着列表一起变
+                            val nowPinned = vm.togglePin(key)
+                            Toast.makeText(
+                                context,
+                                if (nowPinned) "已置顶「${digest.course.name}」" else "已取消置顶",
+                                Toast.LENGTH_SHORT,
+                            ).show()
+                        },
+                        onRefresh = { d -> vm.refreshCourse(d.course) },
+                    )
                 }
 
                 if (archived.isNotEmpty()) {
@@ -219,13 +300,80 @@ fun HomeScreen(
                     }
                     if (archiveOpen) {
                         items(archived, key = { "${it.course.courseId}:${it.course.classId}" }) { digest ->
-                            CourseRow(digest, 0, expiredOf(digest)) { onOpenCourse(digest) }
+                            CourseItem(
+                            digest = digest,
+                            pinned = false,
+                            actionable = actionableOf(digest),
+                            expired = expiredOf(digest),
+                            refreshing = "${'$'}{digest.key}" in state.refreshingCourses,
+                            note = state.courseNotes[digest.key],
+                            onOpen = {
+                                if (digest.ok) {
+                                    onOpenCourse(it)
+                                } else {
+                                    Toast.makeText(context, digest.error ?: "这门课暂时取不到", Toast.LENGTH_SHORT).show()
+                                }
+                            },
+                            onTogglePin = { key ->
+                            // 长按没有视觉即时反馈，给一句话确认；置顶标识会跟着列表一起变
+                            val nowPinned = vm.togglePin(key)
+                            Toast.makeText(
+                                context,
+                                if (nowPinned) "已置顶「${digest.course.name}」" else "已取消置顶",
+                                Toast.LENGTH_SHORT,
+                            ).show()
+                        },
+                            onRefresh = { d -> vm.refreshCourse(d.course) },
+                    )
                         }
                     }
                 }
             }
         }
     }
+}
+
+/**
+ * 一行课程的完整行为：点开、长按置顶、独立刷新。
+ *
+ * 抽这一层是为了让三个分组（置顶 / 待办 / 归档）用**完全相同**的一套回调——
+ * 否则很容易出现"归档区里的课没有刷新键"这类不对称。
+ */
+/**
+ * 列表排序：置顶的在前，其余保持原顺序。
+ *
+ * `sortedByDescending` 是**稳定排序**，所以同一组内不会被打乱——
+ * repo 已经按"待办多的在前"排好，置顶只应该改变分组，不该改变组内优先级。
+ *
+ * 抽成纯函数是为了能单测（见 `HomeOrderTest`）：排序这种"看起来不会错"的代码，
+ * 恰恰最容易在一次重构里被写成 `sortedBy { pinned }`（顺序反了）。
+ */
+internal fun orderCourses(shown: List<CourseDigest>, pinned: Set<String>): List<CourseDigest> =
+    shown.sortedByDescending { it.key in pinned }
+
+@Composable
+private fun CourseItem(
+    digest: CourseDigest,
+    pinned: Boolean,
+    actionable: Int,
+    expired: Int,
+    refreshing: Boolean,
+    note: CourseNote?,
+    onOpen: (CourseDigest) -> Unit,
+    onTogglePin: (String) -> Unit,
+    onRefresh: (CourseDigest) -> Unit,
+) {
+    CourseRow(
+        digest = digest,
+        actionable = actionable,
+        expired = expired,
+        pinned = pinned,
+        refreshing = refreshing,
+        note = note,
+        onClick = { onOpen(digest) },
+        onLongClick = { onTogglePin(digest.key) },
+        onRefresh = { onRefresh(digest) },
+    )
 }
 
 @Composable

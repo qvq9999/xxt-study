@@ -61,9 +61,32 @@ class StudySettings(context: Context) {
         )
     }.getOrDefault(ThemeMode.SYSTEM)
 
+    /*
+     * 置顶课程。
+     *
+     * 存的是 `courseId:classId`（和 Course.key / 快照的键完全一致），
+     * 不是课程名——课程名会带班级后缀、也可能被老师改，拿名字当键迟早对不上。
+     *
+     * 同样用 StateFlow：长按置顶后列表要**立刻**重排，不能等下次进页面。
+     */
+    private val _pinned = MutableStateFlow(readPinned())
+    val pinnedCourses: StateFlow<Set<String>> = _pinned.asStateFlow()
+
+    fun togglePinned(key: String): Boolean {
+        val next = if (key in _pinned.value) _pinned.value - key else _pinned.value + key
+        prefs.edit().putStringSet(KEY_PINNED, next).apply()
+        _pinned.value = next
+        return key in next
+    }
+
+    /** 登出时不该把手动置顶清掉：那是用户的偏好，不是账号数据 */
+    private fun readPinned(): Set<String> =
+        prefs.getStringSet(KEY_PINNED, emptySet())?.toSet().orEmpty()
+
     private companion object {
         const val KEY_AUTO_QUIZ = "auto_quiz"
         const val KEY_STOP_ON_ERROR = "stop_on_error"
         const val KEY_THEME = "theme_mode"
+        const val KEY_PINNED = "pinned_courses"
     }
 }

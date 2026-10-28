@@ -42,10 +42,10 @@ android {
         applicationId = "com.xxt.study"
         minSdk = 26
         targetSdk = 37
-        // 0.9.1：答题窗口改成对话式优化（可多轮、可撤销）+ 使用说明同步新版
+        // 0.9.2：课程置顶 + 每门课独立刷新 + 里外计数同步 + 思考过程折叠 + 内容不截断
         // versionCode 每次发布必须递增，否则覆盖安装会被拒，内置更新也会判成"没有新版"
-        versionCode = 24
-        versionName = "0.9.1"
+        versionCode = 25
+        versionName = "0.9.2"
     }
 
     buildTypes {
