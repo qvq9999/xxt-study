@@ -1,0 +1,36 @@
+# ---------- 构建产物 ----------
+build/
+.gradle/
+.kotlin/
+.cxx/
+captures/
+*.apk
+*.aab
+*.ap_
+*.dex
+*.hprof
+
+# 本机 Android SDK 路径，因人而异
+local.properties
+
+# ---------- 签名与密钥：绝不入库 ----------
+# release.jks 丢了就没法给已装的手机升级，请单独备份（U 盘 / 私密网盘）
+keystore.properties
+signing/
+*.jks
+*.keystore
+
+# ---------- IDE ----------
+.idea/
+*.iml
+
+# ---------- WorkBuddy ----------
+# 只保留 memory（项目笔记，纯文本、体积小、有长期价值）。
+# 其余是浏览器 profile（500MB+）和抓包样本（含个人课程数据），不入库。
+.workbuddy/*
+!.workbuddy/memory/
+
+# ---------- 系统垃圾 ----------
+.DS_Store
+Thumbs.db
+desktop.ini

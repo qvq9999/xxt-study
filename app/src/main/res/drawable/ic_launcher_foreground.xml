@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  应用图标前景：一本打开的书 + 一枚书签。
+
+  为什么不用生图：图标要能缩到 24dp 还认得出，位图缩下去就糊；
+  矢量路径在任何密度都是同一份几何，改一个坐标就能调。
+
+  几何约束：108x108 画布，内容收在以 (54,54) 为圆心、半径 33 的安全圆内
+  （四角距圆心 32.8），圆形 / 方形 / squircle 各种遮罩都切不到书。
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+
+    <!-- 书脊在 x=54；右页压到 0.86 而不是 0.78——太暗在深蓝底上会显脏 -->
+    <path
+        android:pathData="M28,34 L54,40 L54,78 L28,72 Z"
+        android:fillColor="#FFFFFFFF" />
+
+    <path
+        android:pathData="M80,34 L54,40 L54,78 L80,72 Z"
+        android:fillColor="#FFFFFFFF"
+        android:fillAlpha="0.86" />
+
+    <!-- 书签：8dp 宽、尖端剪 V，缩到 48dp 也还是一枚书签而不是一个红点 -->
+    <path
+        android:pathData="M66,37.3 L74,35.4 L74,58 L70,54.4 L66,58 Z"
+        android:fillColor="#FFD2482F" />
+</vector>

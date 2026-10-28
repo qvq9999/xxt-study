@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="bg">#FFF5F6F8</color>
+
+    <!-- 应用图标底色：与主题 brand (#2A5C8A) 同色，白书压在上面 5.1:1，缩到 48dp 也认得出 -->
+    <color name="ic_launcher_background">#FF2A5C8A</color>
+</resources>

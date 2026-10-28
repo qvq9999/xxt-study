@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  默认全站强制 HTTPS。
+  只对学习通自家域放行明文：手机版登录成功后服务端会跳 http://i.mooc.chaoxing.com
+  （登录页里 refer 隐藏域写死的），以及部分页面仍引用 http 资源。
+  不放行就会得到 net::ERR_CLEARTEXT_NOT_PERMITTED，WebView 显示「网页无法打开」。
+
+  注意：主框架跳转另有 https 升级拦截（LoginScreen.shouldOverrideUrlLoading），
+  这里的明文放行只是兜底，避免个别 http-only 资源把页面打散。
+-->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="false" />
+
+    <domain-config cleartextTrafficPermitted="true">
+        <domain includeSubdomains="true">chaoxing.com</domain>
+        <!-- 云盘/资料下载域，后续做题详情会用到 -->
+        <domain includeSubdomains="true">cldisk.com</domain>
+    </domain-config>
+</network-security-config>
