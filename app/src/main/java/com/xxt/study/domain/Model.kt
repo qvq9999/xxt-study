@@ -9,6 +9,13 @@ data class Course(
 )
 
 /**
+ * 课程唯一键，与 [CourseDigest.key] 同一写法。
+ *
+ * 刷课的日志、断点都按它分组——单独一份"课程 A 的日志"必须能唯一查到。
+ */
+val Course.key: String get() = "$courseId:$classId"
+
+/**
  * 课程中间页下发的 enc 包。
  * 注意：作业列表的 enc= 要用 workEnc，stuenc= 才用 enc，两者来源互换是最大的坑。
  */

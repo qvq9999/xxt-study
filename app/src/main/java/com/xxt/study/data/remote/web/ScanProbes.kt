@@ -21,10 +21,10 @@ package com.xxt.study.data.remote.web
  *
  * ## 现在的做法：给旧文档打标记
  *
- * 每次导航**之前**，先往当前这份文档里写 `window.__xxtNav = 1`，然后才 `loadUrl`。
+ * 每次导航**之前**，先往当前这份文档里写 `window.__xxtNav = Date.now()`，然后才 `loadUrl`。
  * 新文档不会继承这个变量，所以：
  *
- * - 探针看到 `__xxtNav` 存在 → 这份文档就是"即将被替换掉的旧页面"，返回 `WAIT` 继续等；
+ * - 探针看到 `__xxtNav`（且未过期）→ 这份文档就是"即将被替换掉的旧页面"，返回 `WAIT` 继续等；
  * - 看不到 → 一定是新导航产生的文档，可以放心下结论。
  *
  * 这是文档级的事实，不依赖任何时间点回调（`onPageFinished` 会迟到），也不依赖 URL 长相。
@@ -37,6 +37,7 @@ internal object ScanProbes {
     const val TAG_NONE = "NONE|"
     const val TAG_EMPTY = "EMPTY"
     const val TAG_DENIED = "DENIED"
+    const val TAG_VERIFY = "VERIFY|"
 
     /**
      * 给"当前这份文档"打标记。必须在 `loadUrl` **之前**执行完，
@@ -48,29 +49,42 @@ internal object ScanProbes {
     private const val MARK_TTL_MS = 5_000L
 
     /**
-     * 旧文档守卫。
+     * 公共守卫：旧文档 / 空文档。
      *
-     * 带有效期是为了兜住一个反噬场景：万一标记没能在导航前落到旧文档、而是迟到落到了**新文档**上，
+     * 标记带有效期是为了兜住一个反噬场景：万一标记没能在导航前落到旧文档、而是迟到落到了**新文档**上，
      * 没有有效期的话那一页就永远等不到结果（整次扫描全部超时）。
      * 有了有效期，最坏也只是晚 5 秒下结论，而不是卡死。
      */
     private const val GUARD =
         "  var __t=(function(){try{return window.__xxtNav||0;}catch(e){return 0;}})();\n" +
-            "  if(__t && (Date.now()-__t)<${MARK_TTL_MS}) return 'WAIT|旧文档|'+document.readyState;\n" +
-            "  if(h==='' || h.indexOf('about:blank')===0) return 'WAIT|空文档|'+document.readyState;\n"
+            "  if(__t && (Date.now()-__t)<${MARK_TTL_MS}) return 'WAIT|旧文档|'+document.readyState;\n"
+
+    /**
+     * 风控页识别。
+     *
+     * 只收"整句话"形态的关键词：单收"验证码"会把登录页的"验证码登录"、课程页里的
+     * "验证码技术"一起误判——那会让用户莫名其妙被拦在一个验证窗口里。
+     */
+    private const val VERIFY_CHECK =
+        "  var __v=(document.body?document.body.innerText:'').slice(0,4000);\n" +
+            "  if(/请输入验证码|输入验证码|拖动滑块|滑动验证|拖动下方滑块|人机验证|请完成验证|验证码校验/" +
+            ".test(__v)) return 'VERIFY|'+h;\n"
 
     /**
      * 课程中间页。
      *
-     * 有 `#workEnc` 就立刻成功（成功态随时可用）；
-     * 页面 `complete` 却没有它，交给调用方"稳一会儿再认"（可能是还在跳转的中间页）。
+     * 顺序有讲究：
+     * 1. 拿到 `#workEnc` 就立刻成功——正常课程页永远先走这条，**不会**被下面的验证判断误伤；
+     * 2. 验证页要排在登录判定**前面**：风控页常常挂在 passport 域名下，
+     *    先判 LOGIN 会把它当成"登录失效"把用户踢回登录页，而实际只需要输一次验证码。
      */
     fun middle(): String = """
 (function(){
   var h=location.href||'';
-$GUARD  if(h.indexOf('passport')>=0||h.indexOf('/login')>=0) return 'LOGIN';
+$GUARD  if(h==='' || h.indexOf('about:blank')===0) return 'WAIT|空文档|'+document.readyState;
   var e=document.getElementById('workEnc');
   if(e&&e.value) return 'OK|'+h+'|'+e.value;
+$VERIFY_CHECK  if(h.indexOf('passport')>=0||h.indexOf('/login')>=0) return 'LOGIN';
   if(document.readyState!=='complete') return 'WAIT|'+h+'|'+document.readyState;
   var t=(document.body?document.body.innerText:'').replace(/\s+/g,' ').slice(0,160);
   return 'NONE|'+h+'|'+t;
@@ -80,26 +94,28 @@ $GUARD  if(h.indexOf('passport')>=0||h.indexOf('/login')>=0) return 'LOGIN';
     /**
      * 作业列表。
      *
-     * 没有 `li[data]` 且页面已 complete → `EMPTY`（同样由调用方稳一会儿再认）。
+     * 顺序同理：先取行，取到就是正常列表；取不到才判断是不是验证页/登录页。
+     * 这样"作业标题里带验证二字"的课不会被误判。
      */
     fun rows(): String = """
 (function(){
   var h=location.href||'';
-$GUARD  if(h.indexOf('passport')>=0||h.indexOf('/login')>=0) return 'LOGIN';
+$GUARD  if(h==='' || h.indexOf('about:blank')===0) return 'WAIT|空文档|'+document.readyState;
   var t=document.body?document.body.innerText:'';
   if(t.indexOf('无权限')>=0) return 'DENIED';
   var lis=document.querySelectorAll('li[data]');
-  if(!lis.length){
-    if(document.readyState==='complete') return 'EMPTY';
-    return 'WAIT|'+h+'|'+document.readyState;
+  if(lis.length){
+    var out=[];
+    for(var i=0;i<lis.length;i++){
+      var li=lis[i], d=li.getAttribute('data')||'';
+      if(d.indexOf('chaoxing.com')<0) continue;
+      out.push({ label: li.getAttribute('aria-label')||'', url: d });
+    }
+    if(out.length) return JSON.stringify(out);
   }
-  var out=[];
-  for(var i=0;i<lis.length;i++){
-    var li=lis[i], d=li.getAttribute('data')||'';
-    if(d.indexOf('chaoxing.com')<0) continue;
-    out.push({ label: li.getAttribute('aria-label')||'', url: d });
-  }
-  return out.length?JSON.stringify(out):'EMPTY';
+$VERIFY_CHECK  if(h.indexOf('passport')>=0||h.indexOf('/login')>=0) return 'LOGIN';
+  if(document.readyState==='complete') return 'EMPTY';
+  return 'WAIT|'+h+'|'+document.readyState;
 })()
 """
 }

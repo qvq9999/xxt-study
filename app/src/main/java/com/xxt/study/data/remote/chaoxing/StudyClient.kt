@@ -46,6 +46,7 @@ class StudyClient(private val http: Http) {
         val t = http.get(url, referer = BASE)
         if (Parsers.isLoginRedirect(t.finalUrl, t.body)) return@io Cx.NeedLogin
         if (t.code != 200) return@io Cx.Fail(Cx.Kind.NETWORK, "HTTP ${t.code}")
+        Parsers.verifyOrNull(t.body, t.finalUrl)?.let { return@io it }
         Parsers.detectFailure(t.body)?.let {
             return@io Cx.Fail(Cx.Kind.DENIED, "章节目录被拒：$it")
         }
@@ -153,7 +154,11 @@ class StudyClient(private val http: Http) {
             val t = http.get(url, referer = VIDEO_REFERER)
             if (Parsers.isLoginRedirect(t.finalUrl, t.body)) return@io Cx.NeedLogin
             lastCode = t.code
-            if (t.code == 200) return@io Cx.Ok(playingTime >= play.duration)
+            if (t.code == 200) {
+                // 风控会拿 200 + 验证页替换掉正常响应，不看内容就会当成"上报成功"
+                Parsers.verifyOrNull(t.body, t.finalUrl)?.let { return@io it }
+                return@io Cx.Ok(playingTime >= play.duration)
+            }
             if (t.code == 403) continue
             return@io Cx.Fail(Cx.Kind.DENIED, "进度上报被拒 HTTP ${t.code}")
         }
@@ -198,6 +203,7 @@ class StudyClient(private val http: Http) {
             "&clazzId=${course.classId}&enc=${job.enc}&enc2=${job.enc}"
         val t = http.get(url, referer = BASE)
         if (Parsers.isLoginRedirect(t.finalUrl, t.body)) return@io Cx.NeedLogin
+        Parsers.verifyOrNull(t.body, t.finalUrl)?.let { return@io it }
         Parsers.detectFailure(t.body)?.let {
             return@io Cx.Fail(Cx.Kind.DENIED, "测验页面被拒：$it")
         }

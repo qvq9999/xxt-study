@@ -74,14 +74,30 @@ class ScanProbesTest {
     }
 
     @Test
-    fun `作业探针优先读到行 其次才判空`() {
+    fun `作业探针先取行 取不到才判空`() {
         val js = ScanProbes.rows()
         assertTrue(js.contains("li[data]"))
-        assertTrue("没行且已 complete 才返回 EMPTY", js.indexOf("'EMPTY'") < js.indexOf("JSON.stringify"))
-        // 只有 li 数量为 0 的分支里才允许给 EMPTY
-        val emptyIdx = js.indexOf("return 'EMPTY';")
-        val hasRowsIdx = js.indexOf("var out=[];")
-        assertTrue("EMPTY 判定必须在取行之前", emptyIdx in 1 until hasRowsIdx)
+        // 取到行就立刻返回：否则"作业标题里带验证二字"会被当成风控页
+        assertTrue("取行的分支必须在 EMPTY 之前", js.indexOf("JSON.stringify") < js.indexOf("'EMPTY'"))
+    }
+
+    @Test
+    fun `风控页识别要排在登录判定之前`() {
+        for (js in listOf(ScanProbes.middle(), ScanProbes.rows())) {
+            assertTrue("缺少风控页识别", js.contains("'VERIFY|'+h"))
+            // 风控页常常挂在 passport 域名下：先判 LOGIN 会把它当"登录失效"踢回登录页
+            assertTrue(
+                "VERIFY 必须排在 LOGIN 之前",
+                js.indexOf("'VERIFY|'") < js.indexOf("'LOGIN'"),
+            )
+        }
+    }
+
+    @Test
+    fun `正常课程页不会被风控判断误伤`() {
+        // workEnc 命中要排在验证识别之前：正常课程页先走成功分支
+        val js = ScanProbes.middle()
+        assertTrue(js.indexOf("'OK|'") < js.indexOf("'VERIFY|'"))
     }
 
     @Test

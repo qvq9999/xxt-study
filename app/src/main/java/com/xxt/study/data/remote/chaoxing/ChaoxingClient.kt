@@ -58,6 +58,9 @@ class ChaoxingClient(private val http: Http) {
             val json = http.get(COURSES_JSON, referer = BASE)
             if (Parsers.isLoginRedirect(json.finalUrl, json.body)) return@io Cx.NeedLogin
             lastCode = json.code
+            // 风控会把 JSON 接口也替换成验证页，返回的是 HTML 而不是空数组，
+            // 直接当"解析不到"处理会白跑一次重试，还看不出原因
+            Parsers.verifyOrNull(json.body, json.finalUrl)?.let { return@io it }
             fromJson = if (json.code == 200) Parsers.parseCourses(json.body) else emptyList()
             if (fromJson.isNotEmpty()) return@io Cx.Ok(fromJson)
         }
@@ -71,6 +74,7 @@ class ChaoxingClient(private val http: Http) {
         }
         val html = http.get(COURSES_HTML.format(fid), referer = BASE)
         if (Parsers.isLoginRedirect(html.finalUrl, html.body)) return@io Cx.NeedLogin
+        Parsers.verifyOrNull(html.body, html.finalUrl)?.let { return@io it }
         Parsers.detectFailure(html.body)?.let {
             return@io Cx.Fail(Cx.Kind.DENIED, "课程列表 HTML 源被拒：$it")
         }
@@ -87,6 +91,7 @@ class ChaoxingClient(private val http: Http) {
     suspend fun detail(work: Work): Cx<WorkDetail> = io {
         val t = http.get(work.detailUrl, referer = BASE)
         if (Parsers.isLoginRedirect(t.finalUrl, t.body)) return@io Cx.NeedLogin
+        Parsers.verifyOrNull(t.body, t.finalUrl)?.let { return@io it }
         Parsers.detectFailure(t.body)?.let {
             return@io Cx.Fail(Cx.Kind.DENIED, "作业详情被拒：$it")
         }

@@ -55,6 +55,38 @@ object Parsers {
         return null
     }
 
+    /**
+     * 是不是人机验证 / 风控页。
+     *
+     * 关键词都取"只会在验证页出现"的整句，不用单独的"验证码"——
+     * 登录页有"验证码登录"，误判会把用户莫名其妙拦在验证窗口里。
+     */
+    fun looksLikeVerify(html: String): Boolean {
+        if (html.isBlank()) return false
+        val head = html.take(30_000)
+        return VERIFY_WORDS.any { head.contains(it) }
+    }
+
+    /**
+     * 是风控页就"举手"并给出失败结果。
+     *
+     * 统一在这里做，是因为触发点太多（课程列表、作业详情、章节目录、测验页、视频上报）：
+     * 每个调用点自己拼一遍，早晚会漏一个。
+     */
+    fun verifyOrNull(html: String, pageUrl: String): com.xxt.study.core.result.Cx.Fail? {
+        if (!looksLikeVerify(html)) return null
+        com.xxt.study.core.net.VerifyGate.request(pageUrl)
+        return com.xxt.study.core.result.Cx.Fail(
+            com.xxt.study.core.result.Cx.Kind.VERIFY,
+            "学习通触发了风控，需要你手动完成验证后再继续",
+        )
+    }
+
+    private val VERIFY_WORDS = listOf(
+        "请输入验证码", "输入验证码", "拖动滑块", "滑动验证", "拖动下方滑块",
+        "人机验证", "安全验证", "完成验证", "captcha", "验证码校验",
+    )
+
     private val FAIL_WORDS = listOf(
         "您没有权限", "没有权限", "无权限",
         "参数验证不通过", "无效的参数",

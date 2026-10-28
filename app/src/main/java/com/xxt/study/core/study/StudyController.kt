@@ -1,12 +1,14 @@
 package com.xxt.study.core.study
 
 import android.content.Context
+import com.xxt.study.core.net.VerifyGate
 import com.xxt.study.core.result.Cx
 import com.xxt.study.data.remote.chaoxing.StudyClient
 import com.xxt.study.data.repo.QuizHandler
 import com.xxt.study.data.repo.StudyEvent
 import com.xxt.study.data.repo.StudyRunner
 import com.xxt.study.domain.Course
+import com.xxt.study.domain.key
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
@@ -30,12 +32,25 @@ data class StudyUiState(
     val done: Int = 0,
     val failed: Int = 0,
     val skipped: Int = 0,
-    /** 最近若干条事件，最新在最上面 */
-    val log: List<String> = emptyList(),
+    /** 当前这次任务属于哪门课（"courseId:classId"）；没跑过就是空串 */
+    val courseKey: String = "",
+    /**
+     * 运行日志，**按课程分开**，最新在最上面。
+     *
+     * 全局一份日志会让"点开另一门课"时看到上一门课的记录和计数，
+     * 用户会以为这门课已经在跑。键是同 [Course.key] 的写法。
+     */
+    val logs: Map<String, List<String>> = emptyMap(),
     val needLogin: Boolean = false,
     val finished: Boolean = false,
     val error: String? = null,
 ) {
+    /** 取某门课的日志；没跑过就是空列表，不会串到别的课 */
+    fun logFor(key: String): List<String> = logs[key].orEmpty()
+
+    /** 当前这次任务是不是属于这门课 */
+    fun belongsTo(key: String): Boolean = courseKey == key
+
     /** 通知栏/标题用的单行进度 */
     val statusLine: String
         get() = when {
@@ -67,10 +82,37 @@ class StudyController(
     private var scope = CoroutineScope(SupervisorJob())
     private var running: Job? = null
 
+    /**
+     * 验证通过后要续跑哪门课。
+     *
+     * 刷课跑到一半撞上风控，任务会被中止；用户完成验证后如果还要手动点一次「开始」，
+     * 就等于把"验证一下就好"变成了"重新开始"。重跑本身是安全的——已经标记过的任务点
+     * 在解析阶段就被过滤掉了（见 StudyRunner），所以这里直接续。
+     */
+    private var pendingResume: Course? = null
+    private val resumeScope = CoroutineScope(SupervisorJob() + kotlinx.coroutines.Dispatchers.Main.immediate)
+
+    init {
+        resumeScope.launch {
+            VerifyGate.passed.collect {
+                val c = pendingResume ?: return@collect
+                pendingResume = null
+                if (running?.isActive != true) start(c)
+            }
+        }
+    }
+
     fun start(course: Course) {
         if (running?.isActive == true) return
 
-        _state.value = StudyUiState(running = true, courseName = course.name.ifBlank { "未命名课程" })
+        val key = course.key
+        // 重跑就是新一轮：清掉这门课上轮的日志，别让旧记录和新进度混在一起
+        _state.value = StudyUiState(
+            running = true,
+            courseKey = key,
+            courseName = course.name.ifBlank { "未命名课程" },
+            logs = StudyLogs.reset(_state.value.logs, key),
+        )
         StudyService.start(context, "正在准备：${course.name.ifBlank { "课程" }}")
         StudyService.acquireWakeLock(context)
 
@@ -90,11 +132,12 @@ class StudyController(
                 is Cx.NeedLogin -> _state.update {
                     it.copy(running = false, needLogin = true, error = "登录态已失效，请重新登录")
                 }
-                is Cx.Fail -> _state.update {
-                    it.copy(running = false, error = result.detail)
+                is Cx.Fail -> {
+                    _state.update { it.copy(running = false, error = result.detail) }
+                    if (result.kind == Cx.Kind.VERIFY) pendingResume = course
                 }
                 is Cx.Ok -> _state.update {
-                    it.copy(running = false, finished = true, log = it.log)
+                    it.copy(running = false, finished = true)
                 }
             }
             StudyService.stop(context)
@@ -115,6 +158,8 @@ class StudyController(
     fun shutdown() {
         running?.cancel()
         running = null
+        pendingResume = null
+        resumeScope.cancel()
         studyScopeCleanup()
         StudyService.releaseWakeLock()
     }
@@ -165,7 +210,7 @@ class StudyController(
                     is StudyEvent.Done -> event.skipped
                     else -> s.skipped
                 },
-                log = if (line == null) s.log else (listOf(line) + s.log).take(MAX_LOG),
+                logs = if (line == null) s.logs else StudyLogs.push(s.logs, s.courseKey, line),
             )
         }
         if (line != null) StudyService.update(context, line)
@@ -182,7 +227,4 @@ class StudyController(
         is StudyEvent.Failed -> "出错：${event.message}"
     }
 
-    private companion object {
-        const val MAX_LOG = 80
-    }
 }

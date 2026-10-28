@@ -8,6 +8,7 @@ import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import com.xxt.study.core.net.Http
+import com.xxt.study.core.net.VerifyGate
 import com.xxt.study.core.result.Cx
 import com.xxt.study.data.remote.chaoxing.Parsers
 import com.xxt.study.domain.Course
@@ -101,6 +102,11 @@ class WebWorkFetcher(
         val seen = StringBuilder()
         val probe = pollJs(web, ScanProbes.middle(), seen) ?: return timeout("课程页", seen)
         when {
+            probe.startsWith(TAG_VERIFY) -> {
+                // 把风控页的地址交给界面，让用户在学习通原版页面上完成验证
+                VerifyGate.request(probe.removePrefix(TAG_VERIFY))
+                return Cx.Fail(Cx.Kind.VERIFY, "学习通触发了风控，需要你手动完成验证")
+            }
             probe == TAG_LOGIN -> return Cx.NeedLogin
             probe.startsWith(TAG_NONE) -> {
                 val detail = probe.removePrefix(TAG_NONE)
@@ -136,6 +142,10 @@ class WebWorkFetcher(
         seen.setLength(0)
         val rowsProbe = pollJs(web, ScanProbes.rows(), seen) ?: return timeout("作业列表", seen)
         when {
+            rowsProbe.startsWith(TAG_VERIFY) -> {
+                VerifyGate.request(rowsProbe.removePrefix(TAG_VERIFY))
+                return Cx.Fail(Cx.Kind.VERIFY, "学习通触发了风控，需要你手动完成验证")
+            }
             rowsProbe == TAG_LOGIN -> return Cx.NeedLogin
             rowsProbe == TAG_DENIED -> return Cx.Fail(Cx.Kind.DENIED, "作业列表被拒：无权限的操作")
             rowsProbe == TAG_EMPTY -> return Cx.Ok(emptyList())
@@ -347,6 +357,7 @@ class WebWorkFetcher(
         const val TAG_NONE = ScanProbes.TAG_NONE
         const val TAG_EMPTY = ScanProbes.TAG_EMPTY
         const val TAG_DENIED = ScanProbes.TAG_DENIED
+        const val TAG_VERIFY = ScanProbes.TAG_VERIFY
 
         /**
          * 静态资源黑名单。

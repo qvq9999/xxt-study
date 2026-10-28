@@ -1,6 +1,10 @@
 package com.xxt.study.feature.settings
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.ui.draw.clip
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -63,6 +67,11 @@ fun SettingsScreen(
     var message by remember { mutableStateOf<String?>(null) }
 
     var autoQuiz by remember { mutableStateOf(settings.autoQuiz) }
+
+    // 已保存的服务：读密钥库，用版本号缓存；保存/切换后 +1 让列表重算
+    var savedTick by remember { mutableStateOf(0) }
+    val savedServices = remember(savedTick) { ai.savedProviders() }
+    val activeNow = remember(savedTick) { ai.activeProviderId() }
 
     val scope = rememberCoroutineScope()
     val provider = AiProviders.byId(providerId)
@@ -195,8 +204,9 @@ fun SettingsScreen(
                                     providerId,
                                     AiClient.Config(baseUrl.trim(), apiKey.trim(), model.trim()),
                                 )
+                                if (ok) savedTick++
                                 message = if (ok) {
-                                    "已保存到「${provider?.label ?: providerId}」，其它预设的配置没动"
+                                    "已保存到「${provider?.label ?: providerId}」，并已设为当前使用；其它预设的配置没动"
                                 } else {
                                     "保存失败：系统密钥库不可用"
                                 }
@@ -208,6 +218,75 @@ fun SettingsScreen(
                 message?.let {
                     Spacer(Modifier.height(10.dp))
                     Text(text = it, fontSize = 12.sp, color = Palette.sub, lineHeight = 18.sp)
+                }
+            }
+
+            Spacer(Modifier.height(14.dp))
+
+            SettingsCard(title = "已保存的服务") {
+                Text(
+                    text = "这里列出所有**配齐了三项**（地址 / Key / 模型）的服务。点一个就切过去，" +
+                        "答题页和刷课页会立刻使用它；只切当前用哪个，不会改动任何配置。",
+                    fontSize = 11.sp,
+                    color = Palette.weak,
+                    lineHeight = 17.sp,
+                )
+                Spacer(Modifier.height(10.dp))
+
+                if (savedServices.isEmpty()) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(10.dp))
+                            .background(Palette.bg)
+                            .padding(12.dp),
+                    ) {
+                        Text(
+                            text = "还没有配好任何一个服务。把上面的地址、Key、模型填齐后点「保存」，这里就会出现它。",
+                            fontSize = 12.sp,
+                            color = Palette.sub,
+                            lineHeight = 18.sp,
+                        )
+                    }
+                } else {
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        savedServices.forEach { item ->
+                            val active = item.id == activeNow
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clip(RoundedCornerShape(10.dp))
+                                    .background(if (active) Palette.brandSoft else Palette.bg)
+                                    .clickable {
+                                        ai.setActive(item.id)
+                                        savedTick++
+                                        message = "已切换到「${item.label}」"
+                                    }
+                                    .padding(horizontal = 12.dp, vertical = 10.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                Column(Modifier.weight(1f)) {
+                                    Text(
+                                        text = item.label,
+                                        fontSize = 13.sp,
+                                        fontWeight = FontWeight.Medium,
+                                        color = if (active) Palette.brand else Palette.ink,
+                                    )
+                                    Text(
+                                        text = item.model,
+                                        fontSize = 11.sp,
+                                        color = Palette.weak,
+                                        modifier = Modifier.padding(top = 2.dp),
+                                    )
+                                }
+                                Text(
+                                    text = if (active) "使用中" else "切换",
+                                    fontSize = 12.sp,
+                                    color = if (active) Palette.brand else Palette.sub,
+                                )
+                            }
+                        }
+                    }
                 }
             }
 

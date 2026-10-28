@@ -15,7 +15,9 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.ui.Modifier
+import com.xxt.study.core.net.VerifyGate
 import com.xxt.study.core.ui.Palette
 import com.xxt.study.core.ui.StudyTheme
 import com.xxt.study.core.result.Cx
@@ -29,6 +31,7 @@ import com.xxt.study.feature.login.LoginScreen
 import com.xxt.study.feature.mine.GuideScreen
 import com.xxt.study.feature.settings.SettingsScreen
 import com.xxt.study.feature.study.StudyScreen
+import com.xxt.study.feature.verify.VerifyDialog
 import com.xxt.study.feature.work.WorkAnswerScreen
 import com.xxt.study.feature.work.WorkListScreen
 
@@ -116,13 +119,16 @@ class MainActivity : ComponentActivity() {
                         studyCourse != null -> StudyScreen(
                             course = studyCourse!!,
                             controller = container.study,
+                            ai = container.ai,
                             onBack = { studyCourse = null },
+                            onOpenSettings = { showSettings = true },
                         )
 
                         answerWork != null -> WorkAnswerScreen(
                             work = answerWork!!,
                             ai = container.ai,
                             onBack = { answerWork = null },
+                            onOpenSettings = { showSettings = true },
                         )
 
                         openCourse != null -> WorkListScreen(
@@ -147,6 +153,23 @@ class MainActivity : ComponentActivity() {
                             onOpenGuide = { showGuide = true },
                         )
                     }
+                }
+
+                /*
+                 * 人工验证浮层：全局一层，不区分当前在哪一页。
+                 *
+                 * 风控可能在任何请求上触发（扫描、刷课、读作业），而验证只有一个办法——
+                 * 让用户在学习通原版页面上点一下。所以它必须凌驾于所有页面之上，
+                 * 而不是塞进某个业务页面里。
+                 */
+                val verifyUrl by VerifyGate.pending.collectAsStateWithLifecycle()
+                verifyUrl?.let { url ->
+                    VerifyDialog(
+                        url = url,
+                        cookies = container.cookies,
+                        onPassed = { VerifyGate.markPassed() },
+                        onCancel = { VerifyGate.cancel() },
+                    )
                 }
             }
         }

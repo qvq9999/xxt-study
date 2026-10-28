@@ -4,6 +4,7 @@ import android.app.Application
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.xxt.study.App
+import com.xxt.study.core.net.VerifyGate
 import com.xxt.study.core.result.Cx
 import com.xxt.study.domain.Snapshot
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -31,6 +32,13 @@ class HomeViewModel(app: Application) : AndroidViewModel(app) {
         // 先出缓存里的数字，别让用户对着空屏等网络
         _state.update { it.copy(snapshot = container.repo.cached()) }
         refresh()
+
+        // 人工验证通过后自动补扫一遍：失败过的课没进缓存，这次会重新取它们
+        viewModelScope.launch {
+            VerifyGate.passed.collect {
+                if (!_state.value.loading) refresh()
+            }
+        }
     }
 
     /**

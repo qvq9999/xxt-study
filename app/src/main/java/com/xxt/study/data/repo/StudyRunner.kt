@@ -9,6 +9,7 @@ import com.xxt.study.domain.CardDefaults
 import com.xxt.study.domain.ChapterJobs
 import com.xxt.study.domain.ChapterNode
 import com.xxt.study.core.study.StudyLimits
+import com.xxt.study.core.net.VerifyGate
 import com.xxt.study.domain.Course
 import com.xxt.study.domain.CourseTree
 import com.xxt.study.domain.Job
@@ -73,6 +74,10 @@ class StudyRunner(
 
         tree.nodes.forEachIndexed { index, node ->
             if (!currentCoroutineContext().isActive) return Cx.Fail(Cx.Kind.UNKNOWN, "已取消")
+            // 已经撞上风控就别再往下打了：剩下的任务点只会一起失败，还加深风控
+            if (VerifyGate.pending.value != null) {
+                return Cx.Fail(Cx.Kind.VERIFY, "学习通触发了风控，需要你手动完成验证")
+            }
             listener(StudyEvent.ChapterStart(index + 1, tree.nodes.size, node.title))
 
             if (node.locked) {
@@ -98,6 +103,9 @@ class StudyRunner(
                 if (!currentCoroutineContext().isActive) return Cx.Fail(Cx.Kind.UNKNOWN, "已取消")
                 val ok = runJob(course, jobs, job, uid, fid)
                 if (ok) done++ else failed++
+                if (VerifyGate.pending.value != null) {
+                    return Cx.Fail(Cx.Kind.VERIFY, "学习通触发了风控，需要你手动完成验证")
+                }
             }
         }
 

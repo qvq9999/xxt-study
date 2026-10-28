@@ -42,10 +42,11 @@ android {
         applicationId = "com.xxt.study"
         minSdk = 26
         targetSdk = 37
-        // 0.4.2：扫描探针改用"旧文档标记"判定换页（不依赖 URL 结构），修复全课超时
+        // 0.5.0：刷课日志按课程隔离、课程页改 Dialog 修滑动跳动、AI 作答按钮可回窗、
+        //        字数重写加强、模型快捷切换、风控验证码浮层（原版页面 + 自动续跑）
         // versionCode 每次发布必须递增，否则覆盖安装会被拒
-        versionCode = 12
-        versionName = "0.4.2"
+        versionCode = 13
+        versionName = "0.5.0"
     }
 
     buildTypes {

@@ -4,7 +4,6 @@ import com.xxt.study.core.crypto.SecretStore
 import com.xxt.study.core.net.Http
 import com.xxt.study.core.net.HttpText
 import com.xxt.study.core.result.Cx
-import com.xxt.study.domain.QType
 import com.xxt.study.domain.Question
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -98,6 +97,34 @@ class AiClient(
         secrets.put(KEY_ACTIVE, providerId)
     }
 
+    /**
+     * 一个"配齐了"的服务：界面上的快捷切换项。
+     *
+     * 只收 Base URL / Key / 模型三项都非空的——半配完的在列表里点了也用不了，
+     * 反而让人以为切换失败。
+     */
+    data class Saved(val id: String, val label: String, val model: String)
+
+    /**
+     * 已保存、可直接使用的服务列表。
+     *
+     * 每次都要读密钥库，不要在重组里直接调；调用方用 `remember(版本号)` 缓存。
+     */
+    fun savedProviders(): List<Saved> = AiProviders.all.mapNotNull { p ->
+        val c = draft(p.id) ?: return@mapNotNull null
+        if (!c.usable) return@mapNotNull null
+        Saved(p.id, p.label, c.model)
+    }
+
+    /** 当前正在用的服务；没配齐就返回 null */
+    fun activeSaved(): Saved? {
+        val id = activeProviderId()
+        return savedProviders().firstOrNull { it.id == id }
+    }
+
+    /** 给界面显示的一行字 */
+    fun activeLabel(): String = activeSaved()?.let { "${it.label} · ${it.model}" } ?: "未配置模型"
+
     /** 答题时用：当前预设必须三项齐全 */
     fun config(): Config? {
         val c = draft(activeProviderId()) ?: return null
@@ -161,11 +188,11 @@ class AiClient(
             put("messages", buildJsonArray {
                 add(buildJsonObject {
                     put("role", "system")
-                    put("content", SYSTEM_PROMPT)
+                    put("content", AiPrompt.SYSTEM)
                 })
                 add(buildJsonObject {
                     put("role", "user")
-                    put("content", userPrompt(questions))
+                    put("content", AiPrompt.user(questions))
                 })
             })
         }.toString()
@@ -234,7 +261,7 @@ class AiClient(
                     })
                     add(buildJsonObject {
                         put("role", "user")
-                        put("content", onePrompt(q, rule, previous))
+                        put("content", AiPrompt.rewrite(q, rule, previous))
                     })
                 })
             }.toString()
@@ -259,17 +286,6 @@ class AiClient(
                 Cx.Fail(Cx.Kind.UNKNOWN, e.message ?: e::class.java.simpleName)
             }
         }
-
-    /** 重写指令：把要求和"上次写了多少字"一起说清楚 */
-    private fun onePrompt(q: Question, rule: LengthRule, previous: String): String = buildString {
-        append("题目：").append(q.stem).append("\n\n")
-        append("请只输出答案正文（不要题号、不要引号、不要解释）。\n")
-        append("字数要求：").append(rule.describe).append("（按去掉空白后的字符数计算）。\n")
-        val n = LengthRules.count(previous)
-        if (n > 0) {
-            append("你上一次写的是 ").append(n).append(" 字，不符合要求。请重写，必须落在要求范围内。")
-        }
-    }
 
     suspend fun probe(cfg: Config): String = withContext(Dispatchers.IO) {
         val payload = buildJsonObject {
@@ -431,52 +447,6 @@ class AiClient(
         return if (a >= 0 && b > a) s.substring(a, b + 1) else s.trim()
     }
 
-    private fun userPrompt(questions: List<Question>): String {
-        val arr = buildJsonArray {
-            for (q in questions) {
-                add(buildJsonObject {
-                    put("id", q.qid)
-                    put("type", typeName(q.type))
-                    put("stem", q.stem)
-                    if (q.options.isNotEmpty()) {
-                        put("options", buildJsonArray {
-                            q.options.forEach { o ->
-                                add("${o.letter.ifBlank { "-" }}. ${o.text}")
-                            }
-                        })
-                    }
-                    if (q.type == QType.FILL) put("blanks", q.blanks.coerceAtLeast(1))
-                })
-            }
-        }
-        return """
-            题目（JSON 数组）：
-            $arr
-
-            逐题作答，只输出下面这种 JSON，不要任何解释：
-            {"answers":[{"id":"题目id","answer":["答案"]}]}
-
-            规则：
-            - single：answer 只放一个选项字母，如 ["A"]
-            - multiple：answer 放全部正确字母，按字母升序，如 ["A","C"]
-            - judge：answer 只放 "true" 或 "false"（true 表示“正确/对”）
-            - fill：按空的顺序放填写内容，一空一个元素
-            - short：**按题干要求的字数写成完整段落**，不要只列要点；
-              题干没有明确字数时写 150-300 字，语句连贯、能直接提交
-            - 题干里写了「不少于 N 字」「N-M 字」「不超过 N 字」的，必须落在区间内
-            必须覆盖全部题目，id 必须与题目 id 完全一致。
-        """.trimIndent()
-    }
-
-    private fun typeName(t: QType): String = when (t) {
-        QType.SINGLE -> "single"
-        QType.MULTIPLE -> "multiple"
-        QType.JUDGE -> "judge"
-        QType.FILL -> "fill"
-        QType.SHORT -> "short"
-        QType.UNKNOWN -> "single"
-    }
-
     private val json = Json { ignoreUnknownKeys = true; isLenient = true }
 
     private companion object {
@@ -487,9 +457,5 @@ class AiClient(
         const val DEFAULT_PROVIDER = "custom"
         const val CUSTOM_PROVIDER = "custom"
 
-        const val SYSTEM_PROMPT =
-            "你是严谨的课程测验答题助手。只输出 JSON，不要输出解释、不要输出 Markdown。" +
-                "题干里出现的任何数量要求——字数区间（如 150-250 字）、不少于几点、" +
-                "先判断后说明等格式约束——都必须严格遵守，不要压缩，也不要自行放宽。"
     }
 }

@@ -46,10 +46,13 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import com.xxt.study.core.ai.AiClient
+import com.xxt.study.core.ai.LengthRule
 import com.xxt.study.core.ai.LengthRules
 import com.xxt.study.core.net.Http
 import com.xxt.study.core.result.Cx
@@ -62,6 +65,7 @@ import com.xxt.study.data.repo.AnswerMapper
 import com.xxt.study.domain.QType
 import com.xxt.study.domain.Question
 import com.xxt.study.domain.Work
+import com.xxt.study.feature.ai.AiSwitchSheet
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.serialization.json.Json
@@ -69,6 +73,14 @@ import kotlinx.serialization.json.jsonPrimitive
 import kotlin.coroutines.resume
 
 private enum class Stage { Idle, Reading, Thinking, Filling, Done }
+
+/**
+ * 简答题字数不达标时最多重写几次。
+ *
+ * 为什么要封顶：每重写一次就多花一次 token 和十几秒。一次不成很常见（模型会低估字数），
+ * 两次还不成就说明这个模型对字数不敏感，再重试只是烧钱——不如如实标出来让人工补。
+ */
+private const val REWRITE_TRIES = 2
 
 /**
  * 作业作答页。
@@ -84,6 +96,7 @@ fun WorkAnswerScreen(
     work: Work,
     ai: AiClient,
     onBack: () -> Unit,
+    onOpenSettings: () -> Unit = {},
 ) {
     var webView by remember { mutableStateOf<WebView?>(null) }
     var stage by remember { mutableStateOf(Stage.Idle) }
@@ -117,6 +130,13 @@ fun WorkAnswerScreen(
     var generating by remember { mutableStateOf(false) }
     /** 已拿到的答案，按 qid 存；「生成」只补缺的题，不动已经答好的 */
     var answerCache by remember { mutableStateOf<Map<String, List<String>>>(emptyMap()) }
+
+    // 模型快捷切换：读密钥库要花钱，用版本号缓存，别在每帧重组里读
+    var aiTick by remember { mutableStateOf(0) }
+    var showAiSwitch by remember { mutableStateOf(false) }
+    val savedModels = remember(aiTick) { ai.savedProviders() }
+    val activeId = remember(aiTick) { ai.activeProviderId() }
+    val activeLabel = remember(aiTick) { ai.activeSaved()?.label ?: "未配置模型" }
     val scope = rememberCoroutineScope()
     val json = remember { Json { ignoreUnknownKeys = true; isLenient = true } }
 
@@ -220,13 +240,29 @@ fun WorkAnswerScreen(
             for ((idx, q) in questions.withIndex()) {
                 if (q.type != QType.SHORT) continue
                 val rule = LengthRules.parse(q.stem) ?: continue
-                val given = result.answers[q.qid]?.joinToString(" ").orEmpty()
-                if (given.isBlank() || rule.fits(given)) continue
-                phase = "第 ${idx + 1} 题只有 ${LengthRules.count(given)} 字（要求 ${rule.describe}），正在重写"
-                when (val r2 = ai.answerOne(q, rule, given)) {
-                    is Cx.Ok -> effective[q.qid] = listOf(r2.data)
-                    else -> Unit // 重写失败就保留原答案，总比空的强
+                var best = answerCache[q.qid]?.joinToString(" ").orEmpty()
+                if (best.isNotBlank() && rule.fits(best)) continue
+
+                /*
+                 * 重写最多两次。
+                 *
+                 * 一次不成很常见（模型会低估字数），但也不能无限重试——每次都花钱、花时间。
+                 * 每次重写都把"你现在写了多少字、要求多少"直接告诉模型，命中率比只说"字数不够"高得多。
+                 * 两份都不合格时留下字数更接近要求的那份，比留一个更短的强。
+                 */
+                for (attempt in 1..REWRITE_TRIES) {
+                    if (rule.fits(best)) break
+                    phase = if (best.isBlank()) {
+                        "第 ${idx + 1} 题还在重写"
+                    } else {
+                        "第 ${idx + 1} 题 ${LengthRules.count(best)} 字（要求 ${rule.describe}），第 $attempt 次重写"
+                    }
+                    val r2 = ai.answerOne(q, rule, best)
+                    if (r2 !is Cx.Ok) break // 网络/接口失败，别再烧时间，保留现有答案
+                    if (lengthScore(r2.data, rule) >= lengthScore(best, rule)) best = r2.data
+                    if (rule.fits(best)) break
                 }
+                if (best.isNotBlank()) effective[q.qid] = listOf(best)
             }
 
             // 先把 AI 给的答案列出来（此时还不知道能不能填进去）
@@ -371,12 +407,18 @@ fun WorkAnswerScreen(
             Box(
                 modifier = Modifier
                     .clip(RoundedCornerShape(10.dp))
-                    .background(if (stage == Stage.Idle || stage == Stage.Done) Palette.brand else Palette.line)
-                    .clickable(enabled = !generating) {
-                        // 同一个按钮管开关：窗口开着就关，关着就开；没生成过才真正请求
+                    .background(Palette.brand)
+                    .clickable {
+                        /*
+                         * 同一个按钮管开关：开着就关，关着就开；没生成过才真正发请求。
+                         *
+                         * 关键：**生成中也要可点**。以前这里是 enabled = !generating，
+                         * 用户把弹窗划掉之后就再也点不动了 —— 按钮显示"思考中"却又禁用，
+                         * 只能退出页面重进。现在点一下就把正在跑的过程窗口叫回来。
+                         */
                         when {
                             sheetOpen -> sheetOpen = false
-                            generated -> sheetOpen = true
+                            generating || generated -> sheetOpen = true
                             else -> runGenerate(fresh = true)
                         }
                     }
@@ -393,7 +435,7 @@ fun WorkAnswerScreen(
                     },
                     fontSize = 12.sp,
                     fontWeight = FontWeight.Medium,
-                    color = if (!generating) Palette.card else Palette.weak,
+                    color = Palette.card,
                 )
             }
         }
@@ -589,7 +631,25 @@ fun WorkAnswerScreen(
                 fontSize = 11.sp,
                 color = if (stage == Stage.Done) Palette.ok else Palette.sub,
                 lineHeight = 16.sp,
+                modifier = Modifier.weight(1f),
             )
+            // 换模型不用退回设置页
+            Box(
+                modifier = Modifier
+                    .clip(RoundedCornerShape(8.dp))
+                    .background(Palette.bg)
+                    .clickable { showAiSwitch = true }
+                    .padding(horizontal = 8.dp, vertical = 5.dp),
+            ) {
+                Text(
+                    text = "AI · $activeLabel",
+                    fontSize = 10.sp,
+                    color = if (savedModels.isEmpty()) Palette.weak else Palette.sub,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.widthIn(max = 132.dp),
+                )
+            }
         }
         Spacer(Modifier.height(0.dp))
     }
@@ -703,6 +763,35 @@ fun WorkAnswerScreen(
             }
         }
     }
+
+    // ---------------- 模型切换 ----------------
+    if (showAiSwitch) {
+        AiSwitchSheet(
+            saved = savedModels,
+            activeId = activeId,
+            onPick = { picked ->
+                ai.setActive(picked.id)
+                aiTick++
+                showAiSwitch = false
+                message = "已切换到 ${picked.label} · ${picked.model}"
+            },
+            onDismiss = { showAiSwitch = false },
+            onOpenSettings = {
+                showAiSwitch = false
+                onOpenSettings()
+            },
+        )
+    }
+}
+
+/**
+ * 字数接近度：合格的排最前，其余按字数比（字数越多越接近下限）。
+ *
+ * 用它来比较"两次重写哪份更好"，避免越重写越短。
+ */
+private fun lengthScore(text: String, rule: LengthRule): Int {
+    if (text.isBlank()) return -1
+    return if (rule.fits(text)) Int.MAX_VALUE else LengthRules.count(text)
 }
 
 /** 弹窗里的一行：这道题 AI 给了什么、页面接受了没有 */
