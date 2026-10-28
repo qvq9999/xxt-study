@@ -35,6 +35,7 @@ import androidx.compose.ui.unit.sp
 import com.xxt.study.core.result.Cx
 import com.xxt.study.core.ui.Icons24
 import com.xxt.study.core.ui.Palette
+import com.xxt.study.core.update.UpdateUiState
 import com.xxt.study.domain.CourseDigest
 import com.xxt.study.domain.Session
 import com.xxt.study.feature.home.HomeScreen
@@ -62,8 +63,9 @@ fun MainShell(
     onOpenCourse: (CourseDigest) -> Unit,
     onOpenSettings: () -> Unit,
     onOpenGuide: () -> Unit,
-    onCheckUpdate: () -> Unit,
-    checkingUpdate: Boolean,
+    updateState: UpdateUiState,
+    onUpdateClick: () -> Unit,
+    onOpenPermissions: () -> Unit,
 ) {
     // tab 与 session 都由 MainActivity 持有：进设置再返回时不能重新请求，
     // 否则账号信息会先闪回占位再跳成真名（用户看到的"已登录→真实账户名"）
@@ -86,8 +88,9 @@ fun MainShell(
                     onOpenGuide = onOpenGuide,
                     onNeedLogin = onNeedLogin,
                     onLogout = onLogout,
-                    onCheckUpdate = onCheckUpdate,
-                    checkingUpdate = checkingUpdate,
+                    updateState = updateState,
+                    onUpdateClick = onUpdateClick,
+                    onOpenPermissions = onOpenPermissions,
                 )
             }
         }

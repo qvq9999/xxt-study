@@ -1,13 +1,13 @@
 {
-  "versionCode": 17,
-  "versionName": "0.6.1",
-  "sizeBytes": 2503004,
-  "sha256": "8cf5122fd23355846c81c1aa2164a23ab4db8515afebf991db90d2a8b8465e5e",
+  "versionCode": 18,
+  "versionName": "0.7.0",
+  "sizeBytes": 2519388,
+  "sha256": "c2ffac04f9767c10f8dd9ed2f8dbec9b0d2b5d4e2ddffe31af840631a1f8d856",
   "notes": [
-    "修验证码页无限循环",
-    "验证后45秒内不再重复弹窗",
-    "点继续前检查验证码已提交"
+    "启动权限引导",
+    "更新可后台下载",
+    "下载完成发通知"
   ],
   "packageName": "com.xxt.study",
-  "url": "https://github.com/qvq9999/xxt-study/releases/download/v0.6.1/app-release.apk"
+  "url": "https://github.com/qvq9999/xxt-study/releases/download/v0.7.0/app-release.apk"
 }

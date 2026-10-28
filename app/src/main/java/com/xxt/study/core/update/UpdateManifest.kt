@@ -92,6 +92,13 @@ data class UpdateAvailable(
     val source: String,
     val currentVersionCode: Int,
     val currentVersionName: String,
+    /**
+     * 下载完成后的本地安装包。
+     *
+     * 放在这里而不是单独存一份，是因为"下载好了"这件事必须跟着 available 一起走：
+     * 用户关掉弹窗再打开、或者点通知回来，都要能直接拿到文件去装。
+     */
+    val file: java.io.File? = null,
 ) {
     val sizeText: String get() = formatBytes(manifest.sizeBytes)
 

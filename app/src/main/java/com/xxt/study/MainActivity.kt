@@ -1,28 +1,38 @@
 package com.xxt.study
 
 import android.Manifest
+import android.content.Context
+import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
+import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.platform.LocalContext
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.ui.Modifier
 import com.xxt.study.core.net.VerifyGate
 import com.xxt.study.core.ui.Palette
 import com.xxt.study.core.ui.StudyTheme
 import com.xxt.study.core.result.Cx
+import com.xxt.study.core.update.UpdateNotifier
 import com.xxt.study.domain.Course
 import com.xxt.study.domain.CourseDigest
 import com.xxt.study.domain.Session
@@ -31,31 +41,36 @@ import com.xxt.study.feature.MainShell
 import com.xxt.study.feature.MainTab
 import com.xxt.study.feature.login.LoginScreen
 import com.xxt.study.feature.mine.GuideScreen
+import com.xxt.study.feature.perm.PermissionSetupDialog
 import com.xxt.study.feature.settings.SettingsScreen
 import com.xxt.study.feature.study.StudyScreen
 import com.xxt.study.feature.update.UpdateDialog
-import com.xxt.study.feature.update.rememberUpdateController
 import com.xxt.study.feature.verify.VerifyScreen
 import com.xxt.study.feature.work.WorkAnswerScreen
 import com.xxt.study.feature.work.WorkListScreen
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.MutableStateFlow
 
 class MainActivity : ComponentActivity() {
 
+    private val container: Container get() = (application as App).container
+
+    /**
+     * 通知点进来的。
+     *
+     * 用 Flow 而不是普通字段：点通知时 Activity 可能已经存在（onNewIntent），
+     * Compose 那边需要一个可观察的入口才知道"该把更新弹窗拉起来了"。
+     */
+    private val openUpdateSignal = MutableStateFlow(false)
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        val container = (application as App).container
 
         // 上次下载的安装包如果没装成（用户在系统安装器里取消了），这里顺手清掉，
         // 免得它一直占着外部目录。注意只在 onCreate 做：正在等安装的那份不能被删。
         runCatching { container.installer.cleanup() }
 
-        // Android 13 起前台服务的通知也要授权，否则刷课跑着但通知栏看不见
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
-            checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
-        ) {
-            requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), REQ_NOTIFY)
-        }
+        handleIntent(intent)
 
         setContent {
             StudyTheme {
@@ -86,19 +101,81 @@ class MainActivity : ComponentActivity() {
                 }
 
                 /*
+                 * 权限：两项都要，但申请方式完全不同。
+                 *
+                 * - **通知**（Android 13+）是运行时权限，系统对话框能直接弹；
+                 * - **安装未知应用**（Android 8+）**不是**运行时权限，
+                 *   `requestPermissions` 对它无效，只能跳
+                 *   `Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES` 让用户自己打开。
+                 *   有的 ROM 会在这个页面里再弹一次确认框，有的不会，所以还要给出路径提示。
+                 *
+                 * 首次启动替用户走一遍；之后不再自动打扰，入口留在「我的 → 权限」。
+                 */
+                val meta = remember {
+                    activityContext.getSharedPreferences(META_PREFS, Context.MODE_PRIVATE)
+                }
+                // onResume 就自增一次：从系统设置页回来时权限可能已经变了
+                var permTick by remember { mutableIntStateOf(0) }
+                var showPermSetup by remember { mutableStateOf(false) }
+
+                val lifecycleOwner = LocalLifecycleOwner.current
+                DisposableEffect(lifecycleOwner) {
+                    val observer = LifecycleEventObserver { _, event ->
+                        if (event == Lifecycle.Event.ON_RESUME) {
+                            permTick++
+                            // 如果刚才是因为缺"安装应用"权限卡住的更新，顺手接着下载
+                            container.updateCenter.onPermissionMaybeGranted()
+                        }
+                    }
+                    lifecycleOwner.lifecycle.addObserver(observer)
+                    onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+                }
+
+                val notifGranted = remember(permTick) { activityContext.hasNotificationPermission() }
+                val installGranted = remember(permTick) { container.installer.canInstall() }
+
+                val notifLauncher = rememberLauncherForActivityResult(
+                    ActivityResultContracts.RequestPermission(),
+                ) {
+                    permTick++
+                    // 通知弹窗处理完，接着引导安装权限——两项一起说清楚，别分两次打断
+                    if (!container.installer.canInstall()) showPermSetup = true
+                }
+
+                LaunchedEffect(Unit) {
+                    if (meta.getBoolean(KEY_PERM_PROMPTED, false)) return@LaunchedEffect
+                    meta.edit().putBoolean(KEY_PERM_PROMPTED, true).apply()
+
+                    when {
+                        // 先弹系统的通知权限对话框（用户要求"自动弹出申请"）
+                        !activityContext.hasNotificationPermission() ->
+                            notifLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+                        // 通知已经有了，只剩安装权限要引导
+                        !container.installer.canInstall() -> showPermSetup = true
+                    }
+                }
+
+                /*
                  * 内置更新。
                  *
                  * 自动检查放在**登录之后 5 秒**：冷启动那一会儿正在跑课程列表请求，
                  * 这时候再去外网拉清单，只是多抢一份带宽；等服务端那波先飞完再说。
-                 *
-                 * 只在登录后检查，是因为没登录的用户连作业都看不到，
-                 * 这时候推一个更新弹窗纯属打扰。
+                 * 自动检查是安静的——没新版、检查失败都不打扰，只有发现新版才弹。
                  */
-                val update = rememberUpdateController(container)
+                val updateState by container.updateCenter.state.collectAsStateWithLifecycle()
+
                 LaunchedEffect(loggedIn) {
                     if (!loggedIn) return@LaunchedEffect
                     delay(AUTO_CHECK_DELAY_MS)
-                    update.autoCheck()
+                    container.updateCenter.check(manual = false)
+                }
+
+                // 点"更新已下载"的通知回来：直接把弹窗拉到当前状态
+                val openUpdate by openUpdateSignal.collectAsStateWithLifecycle()
+                LaunchedEffect(openUpdate) {
+                    if (!openUpdate) return@LaunchedEffect
+                    openUpdateSignal.value = false
+                    container.updateCenter.reopen()
                 }
 
                 /**
@@ -209,28 +286,89 @@ class MainActivity : ComponentActivity() {
                             onOpenCourse = { openCourse = it },
                             onOpenSettings = { showSettings = true },
                             onOpenGuide = { showGuide = true },
-                            onCheckUpdate = { update.checkManually() },
-                            checkingUpdate = update.checking,
+                            updateState = updateState,
+                            // 有活干（下载中/待安装）就是"查看"，否则才发起检查
+                            onUpdateClick = {
+                                if (updateState.hasOpenableState) {
+                                    container.updateCenter.reopen()
+                                } else {
+                                    container.updateCenter.check(manual = true)
+                                }
+                            },
+                            onOpenPermissions = { showPermSetup = true },
                         )
                     }
 
                     // 弹窗是独立窗口，放在 Box 里哪个位置都一样；
                     // 放在 when 外面是为了在设置页/答题页也能收到"有新版本"
                     UpdateDialog(
-                        state = update.state,
-                        onUpdate = { update.download() },
-                        onLater = { update.dismiss() },
-                        onOpenPermission = { update.openInstallPermission() },
+                        state = updateState,
+                        onUpdate = { container.updateCenter.download() },
+                        onInstall = { container.updateCenter.install() },
+                        onRetryCheck = { container.updateCenter.check(manual = true) },
+                        onLater = { container.updateCenter.dismiss() },
+                        onOpenPermission = {
+                            if (!container.updateCenter.openInstallPermission()) {
+                                Toast.makeText(
+                                    activityContext,
+                                    "这个系统没有「安装未知应用」页面，请到系统设置 → 应用 → 本应用 里手动允许",
+                                    Toast.LENGTH_LONG,
+                                ).show()
+                            }
+                        },
                     )
+
+                    if (showPermSetup) {
+                        PermissionSetupDialog(
+                            notifGranted = notifGranted,
+                            installGranted = installGranted,
+                            onRequestNotif = {
+                                notifLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+                            },
+                            onOpenInstallSettings = {
+                                if (!container.updateCenter.openInstallPermission()) {
+                                    Toast.makeText(
+                                        activityContext,
+                                        "这个系统没有「安装未知应用」页面，请到系统设置 → 应用 → 本应用 里手动允许",
+                                        Toast.LENGTH_LONG,
+                                    ).show()
+                                }
+                            },
+                            onDismiss = { showPermSetup = false },
+                        )
+                    }
                 }
             }
         }
     }
 
-    private companion object {
-        const val REQ_NOTIFY = 1001
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        handleIntent(intent)
+    }
 
+    /** 通知带过来的"打开更新"信号；不认识的 intent 一律忽略 */
+    private fun handleIntent(intent: Intent?) {
+        if (intent?.getBooleanExtra(UpdateNotifier.EXTRA_OPEN_UPDATE, false) == true) {
+            openUpdateSignal.value = true
+            // 消费掉：否则旋转屏幕/进程重建时会被当成又一次点击
+            intent.removeExtra(UpdateNotifier.EXTRA_OPEN_UPDATE)
+        }
+    }
+
+    private companion object {
         /** 自动检查更新的延迟：让课程列表那波请求先飞完 */
         const val AUTO_CHECK_DELAY_MS = 5_000L
+
+        const val META_PREFS = "app_meta"
+
+        /** 权限引导只在首次启动自动走一遍，之后从「我的 → 权限」进 */
+        const val KEY_PERM_PROMPTED = "perm_prompted"
     }
 }
+
+/** Android 13 之前没有通知运行时权限，一律视为已授权 */
+private fun Context.hasNotificationPermission(): Boolean =
+    Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU ||
+        checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED

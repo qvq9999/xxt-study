@@ -8,8 +8,10 @@ import com.xxt.study.core.crypto.SecretStore
 import com.xxt.study.core.font.QuizFont
 import com.xxt.study.core.net.CookieStore
 import com.xxt.study.core.net.Http
+import com.xxt.study.core.update.UpdateCenter
 import com.xxt.study.core.update.UpdateChecker
 import com.xxt.study.core.update.UpdateInstaller
+import com.xxt.study.core.update.UpdateNotifier
 import com.xxt.study.data.local.SnapshotCache
 import com.xxt.study.data.remote.chaoxing.ChaoxingClient
 import com.xxt.study.data.remote.chaoxing.StudyClient
@@ -99,6 +101,28 @@ class Container(app: Application) {
     val updater: UpdateChecker = UpdateChecker(app)
 
     val installer: UpdateInstaller = UpdateInstaller(app)
+
+    /**
+     * 更新任务中枢。
+     *
+     * 生命周期挂在这里（Application）而不是某个页面——用户关掉更新弹窗去刷课，
+     * 下载必须继续；下载完成还要能发通知把他叫回来。
+     *
+     * 通知的"点一下打开"意图也在这里注入，core 层不认识 MainActivity。
+     */
+    private val updateNotifier = UpdateNotifier(app) {
+        android.content.Intent(app, MainActivity::class.java).apply {
+            putExtra(UpdateNotifier.EXTRA_OPEN_UPDATE, true)
+            addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK or android.content.Intent.FLAG_ACTIVITY_CLEAR_TOP)
+        }
+    }
+
+    val updateCenter: UpdateCenter = UpdateCenter(
+        appContext = app.applicationContext,
+        checker = updater,
+        installer = installer,
+        notifier = updateNotifier,
+    )
 
     private val quizFont = QuizFont(app.assets)
 

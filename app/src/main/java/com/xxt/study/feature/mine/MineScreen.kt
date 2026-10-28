@@ -30,7 +30,10 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.xxt.study.core.ui.Icons24
 import com.xxt.study.core.ui.Palette
+import com.xxt.study.core.update.UpdatePhase
+import com.xxt.study.core.update.UpdateUiState
 import com.xxt.study.domain.Session
+import com.xxt.study.feature.update.updateRowText
 
 /**
  * 「我的」页。
@@ -46,8 +49,9 @@ fun MineScreen(
     onOpenGuide: () -> Unit,
     onNeedLogin: () -> Unit,
     onLogout: () -> Unit,
-    onCheckUpdate: () -> Unit,
-    checkingUpdate: Boolean,
+    updateState: UpdateUiState,
+    onUpdateClick: () -> Unit,
+    onOpenPermissions: () -> Unit,
 ) {
     val context = LocalContext.current
     val version = rememberVersion(context)
@@ -134,7 +138,8 @@ fun MineScreen(
 
         Spacer(Modifier.height(14.dp))
 
-        // ---- 关于 ----
+        // ---- 关于 / 更新 ----
+        val row = updateRowText(updateState, version)
         Column(
             modifier = Modifier
                 .fillMaxWidth()
@@ -144,9 +149,17 @@ fun MineScreen(
         ) {
             MineRow(
                 icon = Icons24.Refresh,
-                title = if (checkingUpdate) "正在检查更新" else "检查更新",
-                subtitle = "当前 v$version · 默认走国内镜像源",
-                onClick = { if (!checkingUpdate) onCheckUpdate() },
+                title = row.title,
+                subtitle = row.subtitle,
+                // 检查中/下载中不让重复点，避免连点发出一串请求
+                enabled = updateState.phase != UpdatePhase.CHECKING,
+                onClick = onUpdateClick,
+            )
+            MineRow(
+                icon = Icons24.Alert,
+                title = "权限",
+                subtitle = "通知、安装未知应用 · 缺一个都会影响功能",
+                onClick = onOpenPermissions,
             )
         }
 
@@ -194,12 +207,13 @@ private fun MineRow(
     title: String,
     subtitle: String,
     danger: Boolean = false,
+    enabled: Boolean = true,
     onClick: () -> Unit,
 ) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .clickable(onClick = onClick)
+            .clickable(enabled = enabled, onClick = onClick)
             .padding(horizontal = 16.dp, vertical = 14.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
@@ -207,14 +221,22 @@ private fun MineRow(
             imageVector = icon,
             contentDescription = null,
             modifier = Modifier.size(19.dp),
-            tint = if (danger) Palette.alarm else Palette.sub,
+            tint = when {
+                !enabled -> Palette.line
+                danger -> Palette.alarm
+                else -> Palette.sub
+            },
         )
         Column(Modifier.weight(1f).padding(start = 12.dp)) {
             Text(
                 text = title,
                 fontSize = 14.sp,
                 fontWeight = FontWeight.Medium,
-                color = if (danger) Palette.alarm else Palette.ink,
+                color = when {
+                    !enabled -> Palette.weak
+                    danger -> Palette.alarm
+                    else -> Palette.ink
+                },
             )
             Text(
                 text = subtitle,
@@ -228,7 +250,7 @@ private fun MineRow(
             imageVector = Icons24.ChevronRight,
             contentDescription = null,
             modifier = Modifier.size(18.dp),
-            tint = Palette.line,
+            tint = if (enabled) Palette.line else Palette.bg,
         )
     }
 }

@@ -42,11 +42,11 @@ android {
         applicationId = "com.xxt.study"
         minSdk = 26
         targetSdk = 37
-        // 0.6.1：修「验证码页无限循环」——验证后 45 秒保护期内不再重复弹窗，
-        //        点继续前先检查验证码是否真的提交了，重复放行/重复延长冷却都掐掉
+        // 0.7.0：启动权限引导（通知 + 安装未知应用）、检查更新即时反馈、
+        //        更新可后台下载（关弹窗不中断）+ 完成通知 + 随时重开弹窗
         // versionCode 每次发布必须递增，否则覆盖安装会被拒，内置更新也会判成"没有新版"
-        versionCode = 17
-        versionName = "0.6.1"
+        versionCode = 18
+        versionName = "0.7.0"
     }
 
     buildTypes {
