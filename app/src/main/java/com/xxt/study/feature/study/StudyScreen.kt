@@ -31,9 +31,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.LinearProgressIndicator
-import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Text
-import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -44,7 +42,6 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -56,11 +53,12 @@ import com.xxt.study.core.net.CookieStore
 import com.xxt.study.core.net.Http
 import com.xxt.study.core.net.VerifyGate
 import com.xxt.study.core.study.StudyController
+import com.xxt.study.core.ui.AppModal
 import com.xxt.study.core.ui.Icons24
 import com.xxt.study.core.ui.Palette
 import com.xxt.study.domain.Course
 import com.xxt.study.domain.key
-import com.xxt.study.feature.ai.AiSwitchSheet
+import com.xxt.study.feature.ai.AiSwitchDialog
 
 /**
  * 刷课页。
@@ -93,8 +91,6 @@ fun StudyScreen(
 ) {
     val state by controller.state.collectAsStateWithLifecycle()
     val ctx = LocalContext.current
-    val screenHeight = LocalConfiguration.current.screenHeightDp.dp
-
     val key = remember(course) { course.key }
     // 只有"当前任务就是这门课"时，进度和计数才是这门的
     val mine = state.belongsTo(key)
@@ -500,45 +496,30 @@ fun StudyScreen(
         Spacer(Modifier.height(12.dp))
     }
 
-    // ---------------- AI 过程 ----------------
+    // ---------------- AI 处理过程 ----------------
+    // 0.9.0 起从底部抽屉改成居中弹窗，行为统一由 AppModal 负责
     if (showAiLog) {
-        ModalBottomSheet(
-            onDismissRequest = { showAiLog = false },
-            containerColor = Palette.card,
-            sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
+        AppModal(
+            title = "AI 处理过程",
+            subtitle = "这门课本次刷课里 AI 相关动作的顺序记录",
+            onDismiss = { showAiLog = false },
         ) {
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 20.dp)
-                    .padding(bottom = 20.dp),
-            ) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text(
-                        text = "AI 处理过程",
-                        fontSize = 15.sp,
-                        fontWeight = FontWeight.Medium,
-                        color = Palette.ink,
-                    )
-                    Spacer(Modifier.weight(1f))
-                    TinyAction("关闭") { showAiLog = false }
-                }
-                Spacer(Modifier.height(8.dp))
-                if (aiLines.isEmpty()) {
-                    Text(
-                        text = "这门课还没有 AI 相关记录。\n章节测验任务点开始后，这里会显示：解析题目 → AI 作答 → 回填 → 提交。",
-                        fontSize = 11.sp,
-                        color = Palette.weak,
-                        lineHeight = 17.sp,
-                    )
-                } else {
-                    LazyColumn(
-                        modifier = Modifier.height(screenHeight * 0.5f),
-                        verticalArrangement = Arrangement.spacedBy(3.dp),
-                    ) {
-                        items(aiLines) { line ->
-                            Text(text = line, fontSize = 11.sp, color = Palette.sub, lineHeight = 17.sp)
-                        }
+            if (aiLines.isEmpty()) {
+                Text(
+                    text = "这门课还没有 AI 相关记录。\n章节测验任务点开始后，这里会显示：解析题目 → AI 作答 → 回填 → 提交。",
+                    fontSize = 11.sp,
+                    color = Palette.weak,
+                    lineHeight = 17.sp,
+                )
+            } else {
+                /*
+                 * 用普通 Column 而不是 LazyColumn：弹窗内容区本身就是可滚动的
+                 * （AppModal 统一负责），里面再套一个 LazyColumn 会出现两层滚动，
+                 * 手指落在哪个上全看运气。日志条数有上限，一次性铺出来没有性能问题。
+                 */
+                Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                    aiLines.takeLast(AI_LOG_MAX).forEach { line ->
+                        Text(text = line, fontSize = 11.sp, color = Palette.sub, lineHeight = 17.sp)
                     }
                 }
             }
@@ -547,7 +528,7 @@ fun StudyScreen(
 
     // ---------------- 模型切换 ----------------
     if (showAiSwitch) {
-        AiSwitchSheet(
+        AiSwitchDialog(
             saved = savedModels,
             activeId = activeId,
             onPick = { picked ->
@@ -681,3 +662,11 @@ private fun Pill(text: String, primary: Boolean, onClick: () -> Unit) {
         )
     }
 }
+
+/**
+ * AI 过程弹窗里最多显示多少条。
+ *
+ * 弹窗不再用 LazyColumn（会和弹窗自身的滚动打架），所以必须给个上限：
+ * 一节课刷下来日志可能上百条，全铺出来又长又卡。
+ */
+private const val AI_LOG_MAX = 120

@@ -42,10 +42,10 @@ android {
         applicationId = "com.xxt.study"
         minSdk = 26
         targetSdk = 37
-        // 0.8.2：简答题不再把提示词填进作答框 + 提交结果被页面裁剪时可一键展开
+        // 0.9.0：抽屉统一改弹窗 + 答题可编辑提示词并看生成过程 + 课程页顶部压缩
         // versionCode 每次发布必须递增，否则覆盖安装会被拒，内置更新也会判成"没有新版"
-        versionCode = 22
-        versionName = "0.8.2"
+        versionCode = 23
+        versionName = "0.9.0"
     }
 
     buildTypes {

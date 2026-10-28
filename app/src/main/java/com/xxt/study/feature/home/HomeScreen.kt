@@ -134,8 +134,6 @@ fun HomeScreen(
             ReloginBanner(onClick = onNeedLogin)
         }
 
-        Spacer(Modifier.height(4.dp))
-
         val courses = snapshot?.courses.orEmpty()
         // 搜索只在内存里过滤，不发请求：41 门课全在手上，没必要往返
         val shown = remember(courses, query) {
@@ -152,13 +150,13 @@ fun HomeScreen(
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 20.dp, vertical = 8.dp),
+                .padding(horizontal = 20.dp, vertical = 4.dp),
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Text(
                 text = if (query.isBlank()) "按课程" else "搜索「${query.trim()}」",
-                fontSize = 13.sp,
+                fontSize = 12.sp,
                 fontWeight = FontWeight.Medium,
                 color = Palette.sub,
             )
@@ -239,13 +237,18 @@ private fun HomeHeader(
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(start = 20.dp, end = 12.dp, top = 14.dp, bottom = 4.dp),
+            .padding(start = 20.dp, end = 12.dp, top = 8.dp, bottom = 2.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Column(modifier = Modifier.weight(1f)) {
-            Text("学习通", fontSize = 20.sp, fontWeight = FontWeight.Medium, color = Palette.ink)
-            Text("作业助手", fontSize = 12.sp, color = Palette.weak)
-        }
+        // 0.9.0：删掉"作业助手"副标题那行、标题 20→18sp。
+        // 一屏里它只起"我在哪一页"的作用，不值得占一行高度
+        Text(
+            text = "学习通",
+            fontSize = 18.sp,
+            fontWeight = FontWeight.Medium,
+            color = Palette.ink,
+            modifier = Modifier.weight(1f),
+        )
         IconAction(
             icon = Icons24.Refresh,
             label = if (refreshing) "刷新中" else "刷新（长按全量重扫）",
@@ -291,10 +294,10 @@ private fun SearchBar(value: String, onChange: (String) -> Unit) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(horizontal = 20.dp, vertical = 4.dp)
-            .clip(RoundedCornerShape(12.dp))
+            .padding(horizontal = 20.dp, vertical = 2.dp)
+            .clip(RoundedCornerShape(10.dp))
             .background(Palette.card)
-            .padding(horizontal = 12.dp, vertical = 10.dp),
+            .padding(horizontal = 10.dp, vertical = 7.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Icon(

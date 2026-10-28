@@ -26,6 +26,16 @@ object Changelog {
 
     val entries: List<ChangeEntry> = listOf(
         ChangeEntry(
+            versionName = "0.9.0",
+            date = "10-28",
+            notes = listOf(
+                "抽屉窗口统一改弹窗",
+                "答题可编辑提示词再生成",
+                "作答过程分阶段显示",
+                "课程页顶部更紧凑",
+            ),
+        ),
+        ChangeEntry(
             versionName = "0.8.2",
             date = "10-28",
             notes = listOf(

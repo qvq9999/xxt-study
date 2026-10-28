@@ -16,35 +16,51 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.xxt.study.core.ui.Icons24
 import com.xxt.study.core.ui.Palette
 import com.xxt.study.domain.CourseDigest
 
-/** 首页的大数字：全屏唯一视觉焦点，也只用这一个高饱和色 */
+/**
+ * 首页的待办概览。
+ *
+ * 0.9.0 从"64sp 大数字 + 两行说明"压成一行紧凑版：
+ * 那个大数字竖向吃掉近 90dp，加搜索框和分组标题，列表还没开始就没了三成屏幕。
+ * 现在数字降到 26sp、说明并成一行、上下留白各 6dp，总高约 40dp——
+ * 数字仍然是全屏最大的字，但不再拿"展示面积"换"视觉冲击"。
+ *
+ * 信息量没减：份数、覆盖课数、刷新时间、失败课数全在同一行里。
+ */
 @Composable
 internal fun TodoBlock(todo: Int, subtitle: String) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(horizontal = 20.dp, vertical = 10.dp),
-        verticalAlignment = Alignment.Bottom,
+            .padding(horizontal = 20.dp, vertical = 6.dp),
+        verticalAlignment = Alignment.CenterVertically,
     ) {
         Text(
             text = todo.toString(),
-            fontSize = 64.sp,
+            fontSize = 26.sp,
             fontWeight = FontWeight.Medium,
             color = if (todo > 0) Palette.alarm else Palette.ok,
         )
-        Column(modifier = Modifier.padding(start = 10.dp, bottom = 14.dp)) {
+        Column(modifier = Modifier.padding(start = 8.dp)) {
             Text(
                 text = if (todo > 0) "份未完成作业" else "全部交完",
-                fontSize = 14.sp,
+                fontSize = 12.sp,
                 fontWeight = FontWeight.Medium,
                 color = Palette.ink,
             )
-            Text(text = subtitle, fontSize = 11.sp, color = Palette.weak)
+            Text(
+                text = subtitle,
+                fontSize = 10.sp,
+                color = Palette.weak,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
         }
     }
 }
