@@ -207,7 +207,7 @@ class MainActivity : ComponentActivity() {
                 BackHandler(
                     enabled = loggedIn && (
                         answerWork != null || openCourse != null ||
-                            showSettings || showGuide || tab == MainTab.Mine
+                            showSettings || showGuide || tab != MainTab.Courses
                         ),
                 ) {
                     when {
@@ -215,7 +215,7 @@ class MainActivity : ComponentActivity() {
                         openCourse != null -> openCourse = null
                         showGuide -> showGuide = false
                         showSettings -> showSettings = false
-                        tab == MainTab.Mine -> tab = MainTab.Courses
+                        tab != MainTab.Courses -> tab = MainTab.Courses
                     }
                 }
 

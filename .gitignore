@@ -38,3 +38,7 @@ signing/
 .DS_Store
 Thumbs.db
 desktop.ini
+
+# ---------- 浏览器录制 ----------
+# DevTools 导出的 HAR：含课程 id / cpi / enc 这类个人 token，且单文件好几 MB
+*.devtools

@@ -878,15 +878,15 @@ GET mooc1.chaoxing.com/mooc2/work/list
 "/e/gradle98/bin/gradle.bat" :app:testDebugUnitTest
 ```
 
-171 个单测，覆盖十八个测试类：
+235 个单测，覆盖二十三个测试类：
 
 | 测试类 | 数量 | 覆盖 |
 |---|---|---|
 | `ParsersTest` | 20 | 隐藏 input 属性顺序、作业行过滤、状态归一优先级、`剩余0分钟`、课程双源 |
 | `WorkStateTest` | 11 | **状态机**：截止时间 × 结课 × 当前时间的 11 种组合，以及课程结课字段解析 |
-| `QuestionParserTest` | 13 | 作业页切题（真实 12 题 DOM） |
-| `QuizParserTest` | 18 | 测验页切题、选项字母分离、AI 答案映射（含判断题正反） |
-| `FillScriptTest` | 11 | 回填 JS 生成：单选/多选/填空/简答，先点后填 |
+| `QuestionParserTest` | 14 | 作业页切题（真实 12 题 DOM + 四空填空题） |
+| `QuizParserTest` | 20 | 测验页切题、选项字母分离、AI 答案映射（含判断题正反、填空逐空分量） |
+| `FillScriptTest` | 14 | 回填 JS 生成：单选/多选/**多空逐空**/简答，先点后填 |
 | `StudyParsersTest` | 10 | 章节目录、mArg 嵌套抠取、任务点分流与去重 |
 | `ScanProbesTest` | 10 | 探针：旧文档标记、`about:blank` 一律 WAIT、不许按 URL 猜页面 |
 | `VerifyDetectionTest` | 10 | 风控页识别：JSON 不算页面、泛词必须带"请"、登录页不误判 |

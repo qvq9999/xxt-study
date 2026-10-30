@@ -14,8 +14,14 @@ import okhttp3.HttpUrl.Companion.toHttpUrl
  * 反过来 WebView 打开作答页时，再由 WebView 自己带自己的 Cookie——两边同源即可。
  *
  * 落盘前走 [SecretStore] 加密，不写明文。
+ *
+ * @param namespace 多账号隔离用。空串 = 主账号（沿用历史键 `cx_cookies`，老用户升级不掉登录态）；
+ *                  需要并行第二个号时传 `acct_<key>`，落盘键变成 `cx_cookies_acct_<key>`，两份互不可见。
+ *                  目前只有主账号在用，能力留着是为了将来加号时不用改存储格式。
  */
-class CookieStore(private val secrets: SecretStore) : CookieJar {
+class CookieStore(private val secrets: SecretStore, namespace: String = "") : CookieJar {
+
+    private val prefKey = if (namespace.isBlank()) KEY else "${KEY}_$namespace"
 
     private val jar = LinkedHashMap<String, Cookie>()
     private var loaded = false
@@ -24,7 +30,7 @@ class CookieStore(private val secrets: SecretStore) : CookieJar {
     private fun ensureLoaded() {
         if (loaded) return
         loaded = true
-        val raw = secrets.get(KEY) ?: return
+        val raw = secrets.get(prefKey) ?: return
         for (line in raw.split('\n')) {
             if (line.isBlank()) continue
             decode(line)?.let { jar[keyOf(it)] = it }
@@ -147,7 +153,7 @@ class CookieStore(private val secrets: SecretStore) : CookieJar {
     fun clear() {
         ensureLoaded()
         jar.clear()
-        secrets.remove(KEY)
+        secrets.remove(prefKey)
     }
 
     /** 只清学习通域的缓存参数，不清登录态 */
@@ -159,7 +165,7 @@ class CookieStore(private val secrets: SecretStore) : CookieJar {
     @Synchronized
     private fun persist() {
         val text = jar.values.joinToString("\n") { encode(it) }
-        secrets.put(KEY, text)
+        secrets.put(prefKey, text)
     }
 
     private fun keyOf(c: Cookie) = "${c.domain}|${c.path}|${c.name}"

@@ -125,6 +125,40 @@ class QuestionParserTest {
     }
 
     @Test
+    fun `多空填空题按 tiankongsize 取空数`() {
+        // 2026-10-30 真机录制（简答题.devtools）里的四空填空题：
+        // 容器属性是 camelCase 的 typeName，每个空一个 div.Answer + 一个 UEditor
+        val page = """
+            <div class="whiteDiv">
+              <div class="padBom50 questionLi fontLabel singleQuesId" typeName="填空题" id="question405955126" data="405955126">
+                <h3 class="mark_name colorDeep"><span class="colorShallow">(填空题)</span><p>（1）____（2）____（3）____（4）____</p></h3>
+                <input type="hidden" id="answertype405955126" name="answertype405955126" value="2">
+                <input type="hidden" name="tiankongsize405955126" value="4">
+                <div class="stem_answer">
+                  <div class="Answer"><span class="tiankong fl">第1空</span>
+                    <div class="divText"><div class="textDIV"><textarea name="answerEditor4059551261" id="answerEditor4059551261"></textarea></div></div>
+                  </div>
+                  <div class="Answer"><span class="tiankong fl">第2空</span>
+                    <div class="divText"><div class="textDIV"><textarea name="answerEditor4059551262" id="answerEditor4059551262"></textarea></div></div>
+                  </div>
+                  <div class="Answer"><span class="tiankong fl">第3空</span>
+                    <div class="divText"><div class="textDIV"><textarea name="answerEditor4059551263" id="answerEditor4059551263"></textarea></div></div>
+                  </div>
+                  <div class="Answer"><span class="tiankong fl">第4空</span>
+                    <div class="divText"><div class="textDIV"><textarea name="answerEditor4059551264" id="answerEditor4059551264"></textarea></div></div>
+                  </div>
+                </div>
+              </div>
+            </div>
+        """.trimIndent()
+
+        val q = QuestionParser.parse(page).single()
+        assertEquals(QType.FILL, q.type)
+        assertEquals(4, q.blanks)
+        assertTrue(q.options.isEmpty())
+    }
+
+    @Test
     fun `空内容不崩`() {
         assertTrue(QuestionParser.parse("").isEmpty())
         assertTrue(QuestionParser.parse("<div>没有题目</div>").isEmpty())

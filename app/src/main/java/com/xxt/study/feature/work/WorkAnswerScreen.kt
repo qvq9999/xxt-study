@@ -487,7 +487,8 @@ fun WorkAnswerScreen(
         val items = ArrayList<FillItem>()
         planned.forEach { (_, q, solved) ->
             val v = solved?.value ?: return@forEach
-            items += FillItem(q.qid, q.type, splitValues(q.type, v))
+            // 填空按"空"传分量：页面上 N 个空是 N 个独立编辑框，拼成一句就只能落进第 1 空
+            items += FillItem(q.qid, q.type, valuesOf(q, solved, v), blanksOf(q, solved))
         }
 
         if (items.isEmpty()) {
@@ -508,6 +509,7 @@ fun WorkAnswerScreen(
         message = "正在回填 ${items.size} 题"
         val receipt = evalJs(web, FillScript.build(items)).orEmpty()
         var missed = parseMissed(receipt)
+        var partial = parsePartial(receipt)
 
         // 富文本编辑器是**异步初始化**的：页面刚打开时实例还没建好，
         // 第一次写入可能落空。没填上的题等 400ms 再补一次，通常就成功了。
@@ -518,6 +520,8 @@ fun WorkAnswerScreen(
                 val again = evalJs(web, FillScript.build(retry)).orEmpty()
                 val stillMissed = parseMissed(again)
                 missed = missed - (retry.map { it.qid }.toSet() - stillMissed)
+                // 补填后有空被填满的，从"部分完成"里去掉
+                partial = partial - (retry.map { it.qid }.toSet() - parsePartial(again))
             }
         }
 
@@ -534,12 +538,20 @@ fun WorkAnswerScreen(
             } else {
                 null
             }
+            // 多空题只填上了部分空：必须说出来，否则用户以为交上去就是满分
+            val gapNote = if (q.qid in partial && solved != null) {
+                val got = solved.parts.count { it.isNotBlank() }
+                "（共 ${blanksOf(q, solved)} 空，只填上 $got 空，其余请手动补）"
+            } else {
+                null
+            }
             AnswerRow(
                 number = no,
                 typeLabel = q.typeLabel.ifBlank { typeName(q.type) },
                 // 不截断题干与答案：弹窗里本来就滚得动，截断只会让人看不到全貌
                 stem = q.stem,
-                answer = readable(q, value, solved?.note) + (lenNote ?: ""),
+                answer = readable(q, value, solved?.note, solved?.parts.orEmpty()) +
+                    (gapNote ?: "") + (lenNote ?: ""),
                 ok = ok,
             )
         }
@@ -554,6 +566,7 @@ fun WorkAnswerScreen(
             val noAnswer = planned.count { it.third?.value == null }
             if (noAnswer > 0) append("，$noAnswer 题 AI 没给答案")
             if (missed.isNotEmpty()) append("，${missed.size} 题页面没接受（可能需要手动填）")
+            if (partial.isNotEmpty()) append("，${partial.size} 道填空题有空没填上")
             append("。核对后请自己点提交。")
         }
         message = stat
@@ -1357,11 +1370,22 @@ private fun lengthScore(text: String, rule: LengthRule): Int {
  * 这里**不做截断**。之前简答/填空只给前 60 字，用户想核对第 3 段写了什么就得去网页里翻；
  * 现在整段给出来，长了由弹窗滚动——"看得全"比"行矮"重要。
  */
-private fun readable(q: Question, value: String?, note: String?): String {
+private fun readable(
+    q: Question,
+    value: String?,
+    note: String?,
+    parts: List<String> = emptyList(),
+): String {
     if (value == null) return note ?: "无答案"
     return when (q.type) {
         QType.SINGLE, QType.MULTIPLE -> value
         QType.JUDGE -> if (value == "true") "对" else "错"
+        // 多空题一行一空显示：用户核对时要能一眼看出"第几空填的是什么"
+        QType.FILL -> if (parts.size > 1) {
+            parts.mapIndexed { i, p -> "第${i + 1}空：${p.ifBlank { "（空）" }}" }.joinToString("\n")
+        } else {
+            value
+        }
         else -> value
     }
 }
@@ -1387,15 +1411,47 @@ internal fun parseMissed(receipt: String?): Set<String> {
         .toSet()
 }
 
+/** 从 "FILLED:3/5 MISSED:1,2 PARTIAL:9" 里取出"只填了一部分空"的 qid */
+internal fun parsePartial(receipt: String?): Set<String> {
+    if (receipt.isNullOrBlank()) return emptySet()
+    val idx = receipt.indexOf("PARTIAL:")
+    if (idx < 0) return emptySet()
+    return receipt.substring(idx + "PARTIAL:".length)
+        .trim()
+        .split(',')
+        .filter { it.isNotBlank() }
+        .toSet()
+}
+
 /**
  * 文本题（填空/简答）的最后一道清洗闸。
  *
  * 选择题的答案只有字母，不存在"把提示词抄进去"的问题；文本题才是重灾区。
  * 复用 [AnswerSanitizer]：剥外壳 → 剔掉复述要求的行 → 仍然像要求/照抄题干的一律丢弃。
+ *
+ * 填空题**按空逐条清洗**：整题拼起来洗会把"某空像复述"扩大成"整题无答案"，
+ * 而且空与空之间本来就不该互相影响。
  */
 private fun solveTextGuard(q: Question, solved: SolvedAnswer?): SolvedAnswer? {
     val v = solved?.value ?: return solved
     if (q.type != QType.SHORT && q.type != QType.FILL) return solved
+
+    if (q.type == QType.FILL && solved.parts.isNotEmpty()) {
+        val cleaned = solved.parts.map { p ->
+            if (p.isBlank()) "" else AnswerSanitizer.sanitize(p, q.stem).orEmpty()
+        }
+        if (cleaned.none { it.isNotBlank() }) {
+            return SolvedAnswer(q.qid, null, "答案像是在复述要求或照抄题干，已丢弃（请手动补答）")
+        }
+        if (cleaned == solved.parts) return solved
+        return SolvedAnswer(
+            qid = q.qid,
+            value = cleaned.filter { it.isNotBlank() }.joinToString(" "),
+            note = solved.note,
+            parts = cleaned,
+        )
+    }
+
     val cleaned = AnswerSanitizer.sanitize(v, q.stem)
         ?: return SolvedAnswer(q.qid, null, "答案像是在复述要求或照抄题干，已丢弃（请手动补答）")
     return if (cleaned == v) solved else SolvedAnswer(q.qid, cleaned, solved.note)
@@ -1420,11 +1476,30 @@ private fun SubmitChip(text: String, onClick: () -> Unit) {
     }
 }
 
-/** 把提交值拆成页面能匹配的数组：多选拆字母，其余整串 */
-private fun splitValues(type: QType, value: String): List<String> = when (type) {
-    QType.MULTIPLE -> value.uppercase().map { it.toString() }
+/**
+ * 回填用的分量。
+ *
+ * 填空必须用 [SolvedAnswer.parts]（一空一个元素）；拿拼合串回填会把所有答案
+ * 塞进第 1 个框——多空题填不对的根本原因就在这里。
+ */
+private fun valuesOf(q: Question, solved: SolvedAnswer, value: String): List<String> = when (q.type) {
+    QType.MULTIPLE -> solved.parts.ifEmpty { value.uppercase().map { it.toString() } }
+    QType.FILL -> solved.parts.ifEmpty { listOf(value) }
     else -> listOf(value)
 }
+
+/**
+ * 填空题的空数。
+ *
+ * **以页面 `tiankongsize` 为准**（页面知道真实有几空），解析不到（0）时才退回答案个数。
+ * 反过来（用答案个数顶掉页面）会出事：单空题模型偶尔拆成 4 句，就会被误判成 4 空题。
+ */
+private fun blanksOf(q: Question, solved: SolvedAnswer): Int =
+    if (q.type == QType.FILL) {
+        (if (q.blanks > 0) q.blanks else solved.parts.size).coerceAtLeast(1)
+    } else {
+        1
+    }
 
 /**
  * 执行 JS 并解出字符串；失败返回 null。

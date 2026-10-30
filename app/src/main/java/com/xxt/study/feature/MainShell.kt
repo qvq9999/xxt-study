@@ -52,7 +52,11 @@ enum class MainTab(val label: String, val icon: ImageVector) {
  * Column 里导航是"占位"的，内容停在栏体上方，看起来只是"贴着底边的一张圆角卡"，
  * 不是悬浮。改成 Box 叠放后导航真正脱离布局流，列表能从栏体下面穿过去。
  * 代价是每个页面必须自己留底部内边距（首页 LazyColumn 100dp、
- * 「我的」页底部 96dp），否则最后一项会被永久挡住——所以这两处不能删。
+ * 「我的」页底部 96dp），否则最后一项会被永久挡住——所以这些不能删。
+ *
+ * 胶囊宽度 108dp：两 tab 时每格有 156dp 富余，能撑出"胶囊浮在槽位中央"的观感。
+ * （三 tab 时每格只剩 112dp，108dp 几乎贴满整格，三颗胶囊会连成一条色带，
+ * 悬浮感消失，那时候必须收到 96dp 并留出左右各 8dp 的呼吸位；现已回两 tab。）
  */
 @Composable
 fun MainShell(
@@ -82,6 +86,7 @@ fun MainShell(
                 onNeedLogin = onNeedLogin,
                 onOpenCourse = onOpenCourse,
             )
+
             MainTab.Mine -> MineScreen(
                 session = session,
                 onOpenSettings = onOpenSettings,

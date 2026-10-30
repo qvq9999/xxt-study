@@ -13,6 +13,17 @@ data class SolvedAnswer(
     val value: String?,
     /** 给人看的说明，如 "A"、"未作答：模型未给出" */
     val note: String,
+    /**
+     * 结构化分量。
+     *
+     * - 多选：每个字母一个元素
+     * - **填空：一空一个元素，顺序就是页面上的"第1空/第2空"**
+     * - 其他：空
+     *
+     * [value] 是给人看的拼合串（也用于不需要分量的场景）；分量才是回填的依据——
+     * 多空填空题在页面上是 N 个独立编辑框，拿拼合串往里填必然全落进第 1 空。
+     */
+    val parts: List<String> = emptyList(),
 )
 
 data class QuizSolution(
@@ -75,12 +86,34 @@ object AnswerMapper {
                     .distinct().sorted()
                 val valid = picks.filter { letters.isEmpty() || it.toString() in letters }
                 if (valid.isEmpty()) SolvedAnswer(q.qid, null, "多选：模型给的是「$first」，不在选项里")
-                else SolvedAnswer(q.qid, valid.joinToString(""), valid.joinToString(""))
+                else SolvedAnswer(
+                    qid = q.qid,
+                    value = valid.joinToString(""),
+                    note = valid.joinToString(""),
+                    parts = valid.map { it.toString() },
+                )
             }
 
             QType.JUDGE -> judgeAnswer(q, given)
 
-            QType.FILL, QType.SHORT -> {
+            QType.FILL -> {
+                /*
+                 * 一空一个元素，**保序、保留空位**。
+                 *
+                 * 不能 filter 掉空串：第 2 空为空时若被删掉，第 3 空的答案就会被写到第 2 空里。
+                 * 也不能把多空拼成一句——页面上它们是各自独立的编辑框（见 FillScript 注释）。
+                 */
+                val parts = given.map { it.trim() }
+                val nonEmpty = parts.count { it.isNotBlank() }
+                if (nonEmpty == 0) {
+                    SolvedAnswer(q.qid, null, "填空：模型未给出内容")
+                } else {
+                    val text = parts.filter { it.isNotBlank() }.joinToString(" ")
+                    SolvedAnswer(q.qid, text, text.take(30), parts)
+                }
+            }
+
+            QType.SHORT -> {
                 val text = given.joinToString(" ") { it.trim() }.trim()
                 if (text.isEmpty()) SolvedAnswer(q.qid, null, "填空/简答：模型未给出内容")
                 else SolvedAnswer(q.qid, text, text.take(30))

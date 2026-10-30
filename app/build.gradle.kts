@@ -42,10 +42,12 @@ android {
         applicationId = "com.xxt.study"
         minSdk = 26
         targetSdk = 37
-        // 0.9.2：课程置顶 + 每门课独立刷新 + 里外计数同步 + 思考过程折叠 + 内容不截断
+        // 1.0.1：接 GitHub 上 v1.0.0 往下续（本地曾一路做到 1.4.x 但从未发布，
+        //        版本号与 Release 对不齐，所以整体回收重编）。本次含：移除签到与扫码、
+        //        多空填空题按空回填、去掉相机/定位权限，包体积降约 26%。
         // versionCode 每次发布必须递增，否则覆盖安装会被拒，内置更新也会判成"没有新版"
-        versionCode = 26
-        versionName = "1.0.0"
+        versionCode = 27
+        versionName = "1.0.1"
     }
 
     buildTypes {

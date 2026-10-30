@@ -1,13 +1,13 @@
 {
-  "versionCode": 26,
-  "versionName": "1.0.0",
-  "sizeBytes": 2497648,
-  "sha256": "1494a8454ef9c5681d9160fa6558416418f7196e2b0bf9782a84239bbf53c78f",
+  "versionCode": 27,
+  "versionName": "1.0.1",
+  "sizeBytes": 2514036,
+  "sha256": "8491a7bdf03b0eb82db4b55c6b1e3dfd90c0872bca4a6bfd9e88023e4214d948",
   "notes": [
-    "课程页改任务/章节/作业",
-    "随堂练习可 AI 作答",
-    "已作答自动回填"
+    "移除签到与扫码功能",
+    "多空填空题按空填回",
+    "包体积减小约 26%"
   ],
   "packageName": "com.xxt.study",
-  "url": "https://github.com/qvq9999/xxt-study/releases/download/v1.0.0/app-release.apk"
+  "url": "https://github.com/qvq9999/xxt-study/releases/download/v1.0.1/app-release.apk"
 }

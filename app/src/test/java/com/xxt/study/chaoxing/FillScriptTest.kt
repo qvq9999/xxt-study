@@ -110,4 +110,34 @@ class FillScriptTest {
         assertTrue(com.xxt.study.feature.work.parseMissed("FILLED:5/5 MISSED:").isEmpty())
         assertTrue(com.xxt.study.feature.work.parseMissed(null).isEmpty())
     }
+
+    @Test
+    fun `部分填空的题能被解析出来`() {
+        org.junit.Assert.assertEquals(
+            setOf("33"),
+            com.xxt.study.feature.work.parsePartial("FILLED:3/5 MISSED:11,22 PARTIAL:33"),
+        )
+        assertTrue(com.xxt.study.feature.work.parsePartial("FILLED:5/5 MISSED: PARTIAL:").isEmpty())
+        assertTrue(com.xxt.study.feature.work.parsePartial(null).isEmpty())
+    }
+
+    @Test
+    fun `多空填空把空数带进脚本`() {
+        val js = FillScript.build(listOf(FillItem("405955126", QType.FILL, listOf("a", "b", "c", "d"), 4)))
+        assertTrue("空数要透传给 JS", js.contains("blanks:4"))
+        assertTrue("一空一个答案，不能拼成一句", js.contains("values:[\"a\",\"b\",\"c\",\"d\"]"))
+        // 定位必须按"第N空"那一块走，且要认 answerEditor<qid><n> 的 id 规则
+        assertTrue(js.contains("div.Answer"))
+        assertTrue(js.contains("answerEditor"))
+    }
+
+    @Test
+    fun `多空填空绝不用“含 qid 就算命中”的模糊匹配`() {
+        // 旧实现的根因：按 hint.indexOf(qid) 找编辑器，四个空全命中第 1 个，
+        // 于是所有答案糊进第 1 空。模糊匹配只允许留在单值兜底路径里。
+        val js = FillScript.build(listOf(FillItem("405955126", QType.FILL, listOf("a", "b"), 2)))
+        assertTrue("必须按空序号精确匹配", js.contains("answerEditor'+qid"))
+        assertTrue("多空分支要按 i 取第 i 个答案", js.contains("values[i]"))
+        assertTrue("剩下的空要报出来", js.contains("PARTIAL:"))
+    }
 }

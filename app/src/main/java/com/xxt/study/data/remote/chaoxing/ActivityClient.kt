@@ -363,11 +363,13 @@ class ActivityClient(private val http: Http) {
                             // 列表里 name 常常为空，回退成可读的类型名，别显示"活动 42"
                             name = e.str("name").orEmpty()
                                 .ifBlank { e.str("activeName").orEmpty() }
+                                .ifBlank { e.str("nameOne").orEmpty() }
                                 .ifBlank { activityTypeName(type) },
                             type = type,
                             status = e.int("status") ?: 0,
-                            startAt = e["starttime"].asLong() ?: 0,
-                            endAt = e["endtime"].asLong() ?: 0,
+                            // 两个字段名都试：不同接口版本分别给 starttime / startTime
+                            startAt = e["starttime"].asLong() ?: e["startTime"].asLong() ?: 0,
+                            endAt = e["endtime"].asLong() ?: e["endTime"].asLong() ?: 0,
                             attendCount = e.int("attendNum") ?: 0,
                         )
                         return

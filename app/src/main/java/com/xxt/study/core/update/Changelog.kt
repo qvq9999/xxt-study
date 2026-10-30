@@ -26,6 +26,15 @@ object Changelog {
 
     val entries: List<ChangeEntry> = listOf(
         ChangeEntry(
+            versionName = "1.0.1",
+            date = "10-30",
+            notes = listOf(
+                "移除签到与扫码功能",
+                "多空填空题按空填回",
+                "包体积减小约 26%",
+            ),
+        ),
+        ChangeEntry(
             versionName = "1.0.0",
             date = "10-28",
             notes = listOf(

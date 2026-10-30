@@ -211,6 +211,20 @@ class QuizParserTest {
     }
 
     @Test
+    fun `填空保留每空一份且空位不塌陷`() {
+        // 第 2 空是空串：不能被 filter 掉，否则第 3 空的答案会被写到第 2 空里
+        val a = AnswerMapper.toAnswer(q(QType.FILL, letters = emptyList()), listOf("A", "  ", "C"))
+        assertEquals(listOf("A", "", "C"), a.parts)
+        assertEquals("A C", a.value)
+    }
+
+    @Test
+    fun `多选保留每个字母的分量`() {
+        val a = AnswerMapper.toAnswer(q(QType.MULTIPLE), listOf("C", "A"))
+        assertEquals(listOf("A", "C"), a.parts)
+    }
+
+    @Test
     fun `模型什么都没给时不留假答案`() {
         assertNull(AnswerMapper.toAnswer(q(QType.SINGLE), emptyList()).value)
         assertNull(AnswerMapper.toAnswer(q(QType.FILL), listOf("  ")).value)
